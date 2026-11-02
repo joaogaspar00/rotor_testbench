@@ -7,20 +7,26 @@
 # what you see. The automatic suite (test_commands.py) never turns the motor; this one does,
 # so it is a separate script you only run on purpose.
 #
-# There is no watchdog on the Nano yet: this script ALWAYS sends STOP at the end, even if
-# a test fails or you press Ctrl+C. If anything looks wrong, tap the button (it always locks).
+# The Nano locks the bench if it hears nothing for 1 s (heartbeat). While this script waits for
+# you (questions, button), a background thread keeps sending PING (tc.start_heartbeat).
+# It ALWAYS sends STOP at the end, even if a test fails or you press Ctrl+C.
+# If anything looks wrong, tap the button (it always locks).
 #
 # Run (with the monitor CLOSED):
-#   python3 test_motor.py
-#   python3 test_motor.py /dev/ttyUSB1      (another port)
+#   python3 tests/test_motor.py
+#   python3 tests/test_motor.py /dev/ttyUSB1      (another port)
 
+import os
 import re
 import sys
 import time
 
 import serial
 
-import tests.test_commands as tc     # reuses wait_ready(), send(), read_line() and the EVT list
+# works both as "python3 tests/test_motor.py" and "python3 -m tests.test_motor"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import tests.test_commands as tc     # reuses wait_ready(), send(), read_line(), the heartbeat and the EVT list
 
 PORT = tc.PORT
 BAUD = tc.BAUD
@@ -28,6 +34,7 @@ UNLOCK_WAIT_S = 30             # same as UNLOCK_WAIT_MS on the Nano
 UNLOCK_HOLD_S = 2              # same as UNLOCK_HOLD_MS on the Nano
 READY_WAIT_S = 20              # waits for ESC_ARMING (3 s after a reset) and for you to zero the pot
 TAP_WAIT_S = 15                # time to tap the button when asked
+SERVER_SILENT_S = 1.5          # > SERVER_TIMEOUT_MS on the Nano (1 s): long enough to lock
 SLOW = 8                       # % - slow (1080 us, the start pulse of esc_controller)
 FAST = 15                      # % - a bit faster (1150 us)
 
@@ -119,7 +126,7 @@ def unlock(port):
 
 
 def run(port):
-    # --- 0) start from a known, safe state, in SERVER mode (the Nano starts in POT mode) ---
+    # --- 0) start from a known, safe state, in SERVER mode (already the startup mode) ---
     reply(port, "STOP")
     check("MODE SERVER", reply(port, "MODE SERVER") == "OK MODE SERVER")
     check("starts LOCKED", reply(port, "BENCH").startswith("OK BENCH LOCKED"))
@@ -178,6 +185,18 @@ def run(port):
     check("STOP -> motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
     check("motor stopped after STOP", ask("O motor parou com o STOP?"))
 
+    # --- 5b) the server goes silent (heartbeat stops) with the motor turning: must lock ---
+    if not check("unlock again (heartbeat)", unlock(port)):
+        return
+    check(f"MOTOR {FAST} (for the heartbeat)", reply(port, f"MOTOR {FAST}") == f"OK MOTOR {FAST}")
+    print(f"  >>> The script goes SILENT for {SERVER_SILENT_S} s: the motor must stop (high beep).")
+    tc.stop_heartbeat()
+    time.sleep(SERVER_SILENT_S)
+    tc.start_heartbeat(port)
+    check("silent -> LOCKED SERVER_LOST", reply(port, "BENCH") == "OK BENCH LOCKED SERVER_LOST")
+    check("silent -> motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
+    check("motor stopped when the server went silent", ask("O motor parou (e ouviu um apito agudo)?"))
+
     # --- 6) locked again: refused ---
     check("locked: MOTOR refused again", reply(port, f"MOTOR {FAST}").startswith("ERROR MOTOR bench LOCKED"))
 
@@ -222,14 +241,16 @@ def main():
         return 2
     print("Nano READY.\n")
 
+    tc.start_heartbeat(port)
     try:
         run(port)
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
-        # ALWAYS leave the motor stopped and the bench locked (there is no watchdog yet)
-        port.write(b"STOP\n")
+        # ALWAYS leave the motor stopped and the bench locked
+        tc.write(port, "STOP\n")
         time.sleep(0.2)
+        tc.stop_heartbeat()
         port.close()
         print("STOP sent: motor at 0 %, bench locked.")
 

@@ -26,7 +26,7 @@ import serial
 # works both as "python3 tests/test_ensaio.py" and "python3 -m tests.test_ensaio"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import tests.test_commands as tc     # wait_ready(), read_line(), PORT, BAUD
+import tests.test_commands as tc     # wait_ready(), read_line(), write(), heartbeat, PORT, BAUD
 import tests.test_motor as tm        # reply(), unlock()
 
 MOTOR_MAX_PERCENT = 50   # same as MOTOR_MAX_PERCENT in pins.h: the real throttle at 100 % here
@@ -66,7 +66,7 @@ def to_relative(real):
 def motor(port, percent):
     """Sends MOTOR <percent> and returns the confirmed %, or None (and prints why) if refused.
     Faster than tc.send(): does not wait the extra silence time after the reply."""
-    port.write(f"MOTOR {percent}\n".encode())
+    tc.write(port, f"MOTOR {percent}\n")
     line = tc.read_line(port, time.monotonic() + tc.REPLY_TIMEOUT)
     m = re.fullmatch(r"OK MOTOR (\d+)", line or "")
     if not m:
@@ -143,6 +143,9 @@ def main():
         print("ERROR: the Nano did not say READY")
         return 2
 
+    # The Nano locks if it hears nothing for 1 s: the heartbeat covers the waits
+    # (unlock, countdown). During the profile the MOTOR commands already count.
+    tc.start_heartbeat(port)
     rows = []
     try:
         # known, safe state, in SERVER mode (the mode only changes while LOCKED)
@@ -153,11 +156,15 @@ def main():
         if not re.fullmatch(r"OK BAT (GOOD|WEAK) .*", bat):
             print("Connect a charged battery to the ESC and try again.")
             return 1
+        # The plot window is opened BEFORE unlocking: over X11 (MobaXterm) creating it can freeze
+        # Python (heartbeat included) for more than 1 s. With the bench still LOCKED that is harmless.
+        fig, ax, live = setup_plot()
+        ax.set_title("à espera do desbloqueio...")
+        plt.pause(0.1)
         if not tm.unlock(port):
             print("Bench not unlocked.")
             return 1
 
-        fig, ax, live = setup_plot()
         for i in range(COUNTDOWN_S, 0, -1):
             print(f"  starting in {i}...")
             ax.set_title(f"começa em {i}...")
@@ -166,11 +173,13 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
-        # ALWAYS leave the motor stopped and the bench locked (there is no watchdog yet)
-        port.write(b"MOTOR 0\nSTOP\n")
+        # ALWAYS leave the motor stopped and the bench locked
+        tc.write(port, "MOTOR 0\nSTOP\n")
         time.sleep(0.2)
+        tc.stop_heartbeat()
         port.close()
         print("STOP sent: motor at 0 %, bench locked.")
+        print(f"Longest silence towards the Nano: {tc.longest_silence():.2f} s (it locks at 1 s).")
 
     if rows:
         peak = max(r[3] for r in rows)

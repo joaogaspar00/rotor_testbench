@@ -1,0 +1,18 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Update Firmware",
+      "type": "shell",
+      "command": "pkill -x serial-monitor; pkill -f '[s]ervidor.py'; sleep 0.5; arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old --upload -p /dev/ttyUSB0 ${workspaceFolder}/benchcode",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Monitor",
+      "type": "shell",
+      "command": "arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200",
+      "problemMatcher": []
+    }
+  ]
+}

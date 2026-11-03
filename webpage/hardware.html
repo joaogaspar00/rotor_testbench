@@ -62,6 +62,8 @@ ESC BEC red wire (5 V) --- 10 k&Omega; --- D6 --- 100 k&Omega; --- GND
 </pre>
         <p>Battery plugged into the ESC: the BEC gives 5 V and D6 reads HIGH (~4.5 V). Unplugged: the 100 k&Omega; pulls D6 to LOW.
         <b>Never connect the BEC to the Nano 5V pin.</b></p>
+        <p>The Nano does not see the battery itself: it sees the BEC 5 V that come through the ESC cable. So <code>ESC NONE</code>
+        means "the ESC is not powered": the battery <b>or</b> the ESC cable was unplugged (tested: both give <code>EVT ESC NONE</code>).</p>
         <p>D6 LOW for more than 50 ms (<code>BAT_DISCONNECT_MS</code>) = battery unplugged. After plugging in, the ESC needs
         3 s (<code>BAT_ARM_MS</code>) to arm.</p>
 

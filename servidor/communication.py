@@ -8,6 +8,11 @@ STARTUP_TIMEOUT = 5.0    # s à espera do READY (abrir a porta faz reset ao Nano
 REPLY_TIMEOUT = 1.0      # s à espera da resposta a um comando (OK ... ou ERROR ...). Ignora os eventos (EVT ...).
 HEARTBEAT_S = 0.25       # s sem enviar nada até o heartbeat enviar PING (o Nano bloqueia ao fim de 1 s: SERVER_TIMEOUT_MS)
 
+# Exceção levantada quando o Nano responde com ERROR
+class NanoError(Exception):
+    pass
+
+
 #Ligação ao Nano do banco: a ÚNICA parte do servidor que fala com a porta série
 class Nano:
 
@@ -84,8 +89,9 @@ class Nano:
             else:
                 self.replies.put(line)
 
-    # Envia um comando e devolve a resposta (OK ... ou ERROR ...). Quem lê é a thread de leitura: aqui só se espera pela fila.
+    # Envia um comando e devolve a resposta. Quem lê é a thread de leitura: aqui só se espera pela fila.
     # Pode ser chamado de várias threads (servidor e heartbeat): o cadeado garante um send de cada vez.
+    # É responsável por saber se o nano respondeu em tempo
     def send(self, command):
         with self._send_lock:                   # fecha à entrada, abre à saída (mesmo com erro)
 
@@ -99,6 +105,14 @@ class Nano:
                 return self.replies.get(timeout=REPLY_TIMEOUT)
             except queue.Empty:
                 raise TimeoutError("No response from Nano for command: " + command)
+
+    # Envia um comando e devolve a resposta se for OK, ou levanta NanoError se for ERROR.
+    def _command(self, command):
+        answer = self.send(command)
+        if answer.startswith("OK"):           
+            return answer
+        
+        raise NanoError(f"Nano returned ERROR for command: " + command + " with answer: " + answer)
 
     # Corre na thread do heartbeat: envia PING sempre que ninguém enviou nada há HEARTBEAT_S.
     # Enquanto o servidor envia comandos (p. ex. MOTOR a cada 50 ms) não sai nenhum PING: já contam como sinal de vida.
@@ -117,3 +131,15 @@ class Nano:
     def _handle_event(self, line):
         print(line)
 
+    # ----- Comandos do banco: traduzem entre o Python e o Nano -----
+
+    # Devolve o estado e a tensão da bateria
+    def battery_status(self):
+        answer = self._command("BAT")
+        if answer.startswith("OK BAT"):
+            parts = answer.split()
+            bat_status = parts[2]  # devolve o estado da bateria 
+            bat_volts = parts[3].removesuffix("V")   # devolve o valor da bateria em volts (sem o V no final)
+            return {"state": bat_status, "voltage": float(bat_volts)}   
+
+        raise NanoError(f"Unexpected response for BAT command: {answer}")

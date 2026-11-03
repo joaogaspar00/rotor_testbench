@@ -4,7 +4,7 @@
     {
       "label": "Update Firmware",
       "type": "shell",
-      "command": "pkill -x serial-monitor; pkill -f '[s]ervidor.py'; sleep 0.5; arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old --upload -p /dev/ttyUSB0 ${workspaceFolder}/benchcode",
+      "command": "pkill -x serial-monitor; pkill -f '[s]ervidor/run.py'; sleep 0.5; arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old --upload -p /dev/ttyUSB0 ${workspaceFolder}/benchcode",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
@@ -12,6 +12,18 @@
       "label": "Monitor",
       "type": "shell",
       "command": "arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Server",
+      "type": "shell",
+      "command": "python3 ${workspaceFolder}/servidor/run.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Docs",
+      "type": "shell",
+      "command": "python3 -m http.server 8080 --directory ${workspaceFolder}/webpage",
       "problemMatcher": []
     }
   ]

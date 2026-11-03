@@ -1,0 +1,9 @@
+{
+  // Quando a porta 8080 (Run Docs) aparecer no Pi, o VS Code reencaminha-a e abre-a no browser do PC
+  "remote.portsAttributes": {
+    "8080": {
+      "label": "Docs",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}

@@ -49,7 +49,7 @@ const unsigned long POT_EVENT_MS = 100;     // Frequência máxima de envio de E
 const int PIN_BAT_DETECT = 6;    // deteção de bateria ligada: fio vermelho do BEC do ESC (5V) -> 10 kOhm -> D6 -> 100 kOhm -> GND (NUNCA ao pino 5V)
 const unsigned long BAT_ARM_MS = 3000;        // depois de ligar a bateria, o ESC precisa deste tempo para armar
 const unsigned long BAT_DISCONNECT_MS = 50;   // BEC desligado este tempo = bateria desligada
-const unsigned long BLINK_ARMING_MS = 100;    // amarelo a piscar rápido enquanto o ESC arma
+const unsigned long BLINK_ARMING_MS = 100;    // enquanto o ESC arma: os 3 LEDs à roda (vermelho, verde, amarelo), este tempo cada um
 
 // TENSÃO DA BATERIA (A0) 
 const int PIN_BATTERY = A0;

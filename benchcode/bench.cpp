@@ -190,7 +190,18 @@ static void updateLock() {
 
 // Mostra o estado do bloqueio nos LEDs:
 //   LOCKED = vermelho aceso | UNLOCKING = vermelho a piscar (mais depressa com o botão segurado) | UNLOCKED = verde aceso
+//   ESC a armar (bateria ligada há menos de BAT_ARM_MS) = os 3 LEDs à roda: vermelho, verde, amarelo, BLINK_ARMING_MS cada
 static void showBenchState() {
+    // ESC a armar: só acontece em LOCKED (o ESC_ARMING impede o UNLOCK), por isso nunca esconde outro estado.
+    // Aqui este é o ÚNICO dono dos 3 LEDs: o showBattery() não mexe no amarelo enquanto o ESC arma.
+    if (batteryConnected() && !batteryArmed()) {
+        int phase = (millis() / BLINK_ARMING_MS) % 3;    // 0, 1, 2, 0, 1, 2... a cada 100 ms
+        digitalWrite(PIN_RED,    phase == 0);
+        digitalWrite(PIN_GREEN,  phase == 1);
+        digitalWrite(PIN_YELLOW, phase == 2);
+        return;
+    }
+
     unsigned long blinkMs = holding ? BLINK_HOLD_MS : BLINK_MS;
     bool blinkOn = (millis() / blinkMs) % 2;
     digitalWrite(PIN_RED, benchState == BENCH_LOCKED || (benchState == BENCH_UNLOCKING && blinkOn));

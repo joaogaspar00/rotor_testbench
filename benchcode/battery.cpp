@@ -54,15 +54,16 @@ static void updateVoltage() {
 
 }
 
-// LED amarelo: apagado = sem bateria | pisca rápido = ESC a armar | aceso = pronta | pisca lento = fraca ou baixa
+// LED amarelo: apagado = sem bateria | aceso = pronta | pisca lento = fraca ou baixa (ESC a armar: o bench.cpp roda os 3 LEDs)
 static void showBattery() {
 
     bool on;
 
     // A bateria não está conectada
     if (!connected)           on = false;
-    // A bateria está conectada, mas o ESC ainda não teve tempo de armar
-    else if (!batteryArmed()) on = (millis() / BLINK_ARMING_MS) % 2;
+    // A bateria está conectada, mas o ESC ainda não teve tempo de armar:
+    // não mexe no amarelo, porque o showBenchState() (bench.cpp) roda os 3 LEDs
+    else if (!batteryArmed()) return;
     //A bateria está conectada, o ESC armou, mas a tensão está fraca ou baixa
     else if (weak || lowCut)  on = (millis() / BLINK_WEAK_MS) % 2;
     // A bateria está conectada, o ESC armou, e a tensão está boa

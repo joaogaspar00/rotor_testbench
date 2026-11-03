@@ -83,7 +83,7 @@
             <li><code>updateBench()</code>: battery, pot, button, lock state, LEDs</li>
             <li><code>updateMotor()</code>: 0 % if not UNLOCKED; follows the pot in POT mode</li>
             <li><code>processInput()</code>: reads a complete line, runs the command, replies</li>
-            <li><code>sendEvents()</code>: <code>EVT POT</code>, <code>EVT ESC</code></li>
+            <li><code>sendEvents()</code>: <code>EVT POT</code>, <code>EVT ESC</code>, <code>EVT BENCH</code></li>
         </ol>
 
         <h3 id="modules">Modules</h3>
@@ -110,7 +110,7 @@
             <tr><td>heartbeat thread <code>_heartbeat_loop()</code></td><td>Sends <code>PING</code> when nothing was sent for 250 ms</td></tr>
             <tr><td><code>send()</code></td><td>Writes one command and waits for its reply (lock: one send at a time; <code>TimeoutError</code> after 1 s)</td></tr>
             <tr><td><code>_command()</code></td><td><code>send()</code> + only accepts <code>OK</code>; anything else raises <code>NanoError</code></td></tr>
-            <tr><td><code>_handle_event()</code></td><td>Prints the event; <code>EVT ESC</code> updates <code>nano.esc</code> and the flag <code>nano.esc_armed</code></td></tr>
+            <tr><td><code>_handle_event()</code></td><td>Prints the event; <code>EVT ESC</code> updates <code>nano.esc</code> and the flag <code>nano.esc_armed</code>; <code>EVT BENCH</code> updates <code>nano.bench</code> and wakes <code>wait_unlocked()</code></td></tr>
             <tr><td>command methods</td><td>Translate Python &harr; Nano (see <a href="#commands">COMMANDS</a>)</td></tr>
             <tr><td><code>close()</code></td><td><code>STOP</code>, stops the threads, closes the port</td></tr>
         </table>
@@ -278,12 +278,15 @@ finally:
         <p><b>States:</b> <code>LOCKED</code> | <code>UNLOCKING</code> | <code>UNLOCKED</code></p>
         <p><b>Reasons</b> (LOCKED only): <code>STARTUP</code> <code>STOP</code> <code>BUTTON</code> <code>CHECK</code> <code>TIMEOUT</code> <code>NO_BATTERY</code> <code>LOW_VOLTAGE</code> <code>SERVER_LOST</code></p>
         <p><b>Problems</b> (CHECK only): <code>NO_BATTERY</code> <code>ESC_ARMING</code> <code>LOW_VOLTAGE</code> <code>POT_NOT_ZERO</code> <code>BATTERY_CUT</code> <code>SERVER_LOST</code></p>
+        <p><b>Event:</b> <code>EVT BENCH &lt;state&gt; [reason] [problems]</code> (the same text as the reply) whenever the state or the reason changes,
+        and once after startup. In Python it is kept in <code>nano.bench</code> (the same dictionary as <code>bench_state()</code>).</p>
         <p><b>Errors:</b> none specific.</p>
         <p><b>Flow:</b></p>
         <ol>
             <li><code>cmdBench()</code> calls <code>printBenchState()</code> (<code>bench.cpp</code>)</li>
             <li><code>benchStateName()</code> &rarr; the state; if LOCKED, also <code>lockReason</code> (or <code>STARTUP</code>) and <code>printProblems(lockProblems)</code></li>
-            <li>Python: <code>bench_state()</code>: word 2 = state, word 3 = reason (if it exists), words 4.. = problems</li>
+            <li>event: <code>bench.cpp</code> counts every change in <code>stateVersion</code> (in <code>lockFor()</code>, <code>requestUnlock()</code> and the unlock); <code>sendBenchEvent()</code> prints <code>EVT BENCH</code> + <code>printBenchState()</code> when <code>benchStateVersion()</code> changes</li>
+            <li>Python: <code>bench_state()</code> and the event both use <code>_parse_bench()</code>: word 2 = state, word 3 = reason (if it exists), words 4.. = problems</li>
         </ol>
 
         <h3 id="UNLOCK">UNLOCK</h3>
@@ -291,7 +294,7 @@ finally:
         The command alone never unlocks the bench.</p>
         <p><b>Nano:</b> <code>UNLOCK</code> &rarr; <code>OK UNLOCK UNLOCKING</code> (or <code>OK UNLOCK UNLOCKED</code> if it already was)</p>
         <p><b>Python:</b> <code>bench_unlock()</code> &rarr; <code>"UNLOCKING"</code>. First waits up to 5 s for the ESC to be armed.<br>
-        <code>wait_unlocked(timeout=30)</code> &rarr; <code>True</code> (unlocked) or <code>False</code> (back to LOCKED, or timeout)</p>
+        <code>wait_unlocked(timeout=30)</code> &rarr; <code>True</code> (unlocked) or <code>False</code> (back to LOCKED, or timeout). It asks nothing: it sleeps until an <code>EVT BENCH</code> says the bench left UNLOCKING.</p>
         <p><b>Errors:</b> <code>ERROR UNLOCK not ready: NO_BATTERY POT_NOT_ZERO</code> (the problems, as in BENCH)</p>
         <p><b>Flow:</b></p>
         <ol>
@@ -299,7 +302,7 @@ finally:
             <li><code>cmdUnlock()</code> calls <code>requestUnlock()</code> (<code>bench.cpp</code>), which calls <code>unlockProblems()</code>: <code>batteryConnected()</code>, <code>batteryArmed()</code>, <code>batteryLastVolts()</code>, <code>potAtZero()</code>, <code>batteryLowCut()</code>, <code>serverLostConnection()</code></li>
             <li>no problems: short beep, <code>benchState = BENCH_UNLOCKING</code> &rarr; <code>OK UNLOCK UNLOCKING</code>. Problems: <code>printUnlockProblems()</code> &rarr; <code>ERROR UNLOCK not ready: ...</code></li>
             <li>then, in every loop, <code>updateLock()</code> reads the button (<code>readButton()</code>, debounced): held <code>UNLOCK_HOLD_MS</code> &rarr; <code>BENCH_UNLOCKED</code> + long beep (the ONLY place that unlocks)</li>
-            <li>Python: <code>wait_unlocked()</code> asks <code>bench_state()</code> every 0.2 s until <code>UNLOCKED</code> or <code>LOCKED</code></li>
+            <li>Python: <code>bench_unlock()</code> saves the new state in <code>nano.bench</code> at once; <code>wait_unlocked()</code> sleeps on the condition <code>_bench_changed</code>, woken by each <code>EVT BENCH</code>, until the state is not UNLOCKING</li>
         </ol>
 
         <h3 id="MOTOR">MOTOR</h3>

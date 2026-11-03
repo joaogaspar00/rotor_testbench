@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rotor Testbench - Hardware</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <b>Index</b>
+        <ul id="toc"></ul>
+    </nav>
+    <div class="main_container" style="margin: 0 auto; max-width: 1000px; padding: 20px;">
+        <div class="menu">
+            <a href="index.html">Home</a>
+            <a href="software.html">Software</a>
+            <a class="here" href="hardware.html">Hardware</a>
+        </div>
+        <div class="header" style="text-align: center; margin-bottom: 60px;">
+            <h1>Rotor Testbench</h1>
+            <p>Hardware: components, pins and circuits. All values come from <code>benchcode/pins.h</code>.</p>
+        </div>
+
+        <h2 id="components">COMPONENTS</h2>
+        <table>
+            <tr><th>Component</th><th>Notes</th></tr>
+            <tr><td>Raspberry Pi</td><td>The server. Talks to the Nano by USB (<code>/dev/ttyUSB0</code>)</td></tr>
+            <tr><td>Arduino Nano</td><td>ATmega328P, old bootloader (<code>cpu=atmega328old</code>). Powered by the USB</td></tr>
+            <tr><td>ESC</td><td>Driven by the servo signal on D9. Its BEC (5 V) is used to detect the battery</td></tr>
+            <tr><td>Brushless motor</td><td>&mdash;</td></tr>
+            <tr><td>LiPo battery, 3S</td><td>Powers the ESC. Balance lead used to measure the voltage</td></tr>
+            <tr><td>Potentiometer</td><td>Throttle in POT mode</td></tr>
+            <tr><td>Push button</td><td>Unlock (hold 2 s) / lock (one tap)</td></tr>
+            <tr><td>3 LEDs</td><td>Red, green, yellow; each with a 330 &Omega; resistor to GND</td></tr>
+            <tr><td>Buzzer</td><td>Beeps (driven with <code>tone()</code>)</td></tr>
+        </table>
+
+        <h2 id="pins">PINS</h2>
+        <table>
+            <tr><th>Pin</th><th>Name in pins.h</th><th>Connected to</th><th>Mode</th></tr>
+            <tr><td>D2</td><td><code>PIN_RED</code></td><td>Red LED (bench state)</td><td>output</td></tr>
+            <tr><td>D3</td><td><code>PIN_GREEN</code></td><td>Green LED (bench state)</td><td>output</td></tr>
+            <tr><td>D4</td><td><code>PIN_YELLOW</code></td><td>Yellow LED (battery)</td><td>output</td></tr>
+            <tr><td>D6</td><td><code>PIN_BAT_DETECT</code></td><td>ESC BEC (battery plugged in)</td><td>input (external 100 k&Omega; pull-down)</td></tr>
+            <tr><td>D7</td><td><code>PIN_BUZZER</code></td><td>Buzzer</td><td>output</td></tr>
+            <tr><td>D8</td><td><code>PIN_BUTTON</code></td><td>Push button to GND</td><td>input pull-up</td></tr>
+            <tr><td>D9</td><td><code>PIN_ESC</code></td><td>ESC signal</td><td>servo PWM (Timer1)</td></tr>
+            <tr><td>A0</td><td><code>PIN_BATTERY</code></td><td>Battery voltage divider</td><td>analog</td></tr>
+            <tr><td>A6</td><td><code>PIN_POT</code></td><td>Potentiometer wiper</td><td>analog (input only)</td></tr>
+            <tr><td>GND</td><td>&mdash;</td><td>Common to the ESC, battery divider, LEDs, button, pot</td><td>&mdash;</td></tr>
+        </table>
+
+        <h2 id="circuits">CIRCUITS</h2>
+
+        <h3 id="esc-signal">ESC signal (D9)</h3>
+        <p>Servo pulses, 50 per second: 1000 &micro;s = 0 % (stopped), 2000 &micro;s = 100 %. The firmware never goes above
+        <code>MOTOR_MAX_PERCENT</code> = 50 % (1500 &micro;s). The ESC ground must be connected to the Nano GND.</p>
+
+        <h3 id="battery-detect">Battery detection (D6)</h3>
+<pre>
+ESC BEC red wire (5 V) --- 10 k&Omega; --- D6 --- 100 k&Omega; --- GND
+</pre>
+        <p>Battery plugged into the ESC: the BEC gives 5 V and D6 reads HIGH (~4.5 V). Unplugged: the 100 k&Omega; pulls D6 to LOW.
+        <b>Never connect the BEC to the Nano 5V pin.</b></p>
+        <p>D6 LOW for more than 50 ms (<code>BAT_DISCONNECT_MS</code>) = battery unplugged. After plugging in, the ESC needs
+        3 s (<code>BAT_ARM_MS</code>) to arm.</p>
+
+        <h3 id="battery-voltage">Battery voltage (A0)</h3>
+<pre>
+battery + (balance lead) --- 10 k&Omega; --- A0 --- 4.7 k&Omega; --- GND
+</pre>
+        <p><code>V(A0) = V(battery) &times; 4.7 / (10 + 4.7)</code>. A full 3S battery (12.6 V) gives 4.03 V on A0.
+        The highest voltage it can measure is <code>VREF &times; 14.7 / 4.7</code> &asymp; 14.5 V.</p>
+        <p><code>VREF</code> = 4.64 V: the real voltage on the Nano 5V pin (measured with a multimeter; calibrate it for better readings).
+        Each measurement is the average of 16 readings (<code>BAT_SAMPLES</code>), every 100 ms.</p>
+        <table>
+            <tr><th>State</th><th>Battery</th><th>Per cell</th><th>Meaning</th></tr>
+            <tr><td><code>NONE</code></td><td>&lt; 6.0 V</td><td>&mdash;</td><td>no balance lead</td></tr>
+            <tr><td><code>LOW</code></td><td>&lt; 10.2 V</td><td>3.4 V</td><td>the motor cannot turn; 2 s below this while UNLOCKED locks the bench</td></tr>
+            <tr><td><code>WEAK</code></td><td>&lt; 10.8 V</td><td>3.6 V</td><td>finish the test and charge (hysteresis 0.2 V)</td></tr>
+            <tr><td><code>GOOD</code></td><td>&ge; 10.8 V</td><td>&mdash;</td><td>&mdash;</td></tr>
+        </table>
+
+        <h3 id="button">Push button (D8)</h3>
+        <p>D8 &rarr; button &rarr; GND, with the Nano internal pull-up (<code>INPUT_PULLUP</code>): released = HIGH, pressed = LOW.
+        Debounce 20 ms (<code>DEBOUNCE_MS</code>).</p>
+
+        <h3 id="pot">Potentiometer (A6)</h3>
+        <p>Ends to GND and 5V, wiper to A6. With pin 1 to GND and pin 3 to 5V, turning clockwise increases the value (0..1023).
+        A6 is analog input only on the Nano.</p>
+
+        <h3 id="leds">LEDs (D2, D3, D4)</h3>
+        <p>Pin &rarr; 330 &Omega; &rarr; LED &rarr; GND (HIGH = on).</p>
+
+        <h2 id="indicators">LEDS AND BEEPS</h2>
+        <h3 id="led-meaning">LEDs</h3>
+        <table>
+            <tr><th>What you see</th><th>Meaning</th></tr>
+            <tr><td>Red, green, yellow rotating (100 ms each)</td><td>ESC arming: wait</td></tr>
+            <tr><td>Red on</td><td>LOCKED</td></tr>
+            <tr><td>Red blinking (500 ms)</td><td>UNLOCKING: hold the button</td></tr>
+            <tr><td>Red blinking fast (200 ms)</td><td>UNLOCKING, button being held</td></tr>
+            <tr><td>Green on</td><td>UNLOCKED: the motor can turn</td></tr>
+            <tr><td>Yellow off</td><td>No battery</td></tr>
+            <tr><td>Yellow on</td><td>Battery good</td></tr>
+            <tr><td>Yellow blinking slowly (500 ms)</td><td>Battery weak or low</td></tr>
+        </table>
+        <h3 id="beeps">Beeps</h3>
+        <table>
+            <tr><th>Beep</th><th>Meaning</th></tr>
+            <tr><td>2000 Hz short</td><td><code>UNLOCK</code> accepted: hold the button</td></tr>
+            <tr><td>2000 Hz long</td><td>Unlocked</td></tr>
+            <tr><td>1000 Hz short</td><td>Locked (button tap or battery unplugged)</td></tr>
+            <tr><td>1000 Hz long</td><td>Locked: battery low</td></tr>
+            <tr><td>3000 Hz long</td><td>Locked: server lost (heartbeat)</td></tr>
+        </table>
+    </div>
+    <script src="toc.js"></script>
+</body>
+</html>

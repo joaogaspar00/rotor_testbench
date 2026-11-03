@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rotor Testbench - Software</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <b>Index</b>
+        <ul id="toc"></ul>
+    </nav>
+    <div class="main_container" style="margin: 0 auto; max-width: 1000px; padding: 20px;">
+        <div class="menu">
+            <a href="index.html">Home</a>
+            <a class="here" href="software.html">Software</a>
+            <a href="hardware.html">Hardware</a>
+        </div>
+        <div class="header" style="text-align: center; margin-bottom: 60px;">
+            <h1>Rotor Testbench</h1>
+            <p>Software: architecture, repository and modules.</p>
+        </div>
+
+        <h2 id="architecture">ARCHITECTURE</h2>
+        <p>Each layer only talks to the layer next to it. The Raspberry Pi manages everything; the Nano only runs simple commands and protects the hardware.</p>
+<pre>
+ PC (browser)       dashboard                     (future)
+       |  HTTP
+ Raspberry Pi       API (FastAPI)                 (future)
+                    runner: runs the tests        (future)
+                    communication.py: class Nano  &lt;- the ONLY part that talks to the serial port
+       |  USB serial, 115200 baud, one line per command
+ Arduino Nano       firmware (benchcode/)         &lt;- safety: lock, button, heartbeat, watchdog
+       |  servo PWM, 50 Hz, 1000..2000 us
+ ESC  -&gt;  motor
+</pre>
+
+        <h3 id="protocol">Serial protocol</h3>
+        <ul>
+            <li>One command per line, ending in <code>\n</code>: <code>&lt;NAME&gt; [value1] [value2] ...</code></li>
+            <li>Every command gets <b>exactly one</b> reply line: <code>OK ...</code> or <code>ERROR ...</code></li>
+            <li>Lines starting with <code>EVT</code> are events: the Nano sends them on its own, at any time</li>
+            <li>Opening the port resets the Nano. It prints a banner and then <code>READY</code>: only after that can commands be sent</li>
+            <li>The protocol words are always in English (the tests check the exact text)</li>
+        </ul>
+
+        <h3 id="safety">Safety layers</h3>
+        <ol>
+            <li>Startup: the ESC signal goes to 0 % in the first line of <code>setup()</code>; the bench starts LOCKED</li>
+            <li><code>MOTOR_MAX_PERCENT</code> = 50 %: checked in <code>motor.cpp</code>, the only module that drives the ESC</li>
+            <li>The motor only turns with the bench UNLOCKED: <code>updateMotor()</code> checks it on every loop</li>
+            <li>Unlocking is hard: <code>UNLOCK</code> command + all checks OK + the physical button held 2 s</li>
+            <li>Locking is easy: one tap, <code>STOP</code>, battery unplugged or low, server silent for 1 s (heartbeat)</li>
+            <li>Watchdog (interrupt mode, 250 ms): if <code>loop()</code> hangs, the motor is set to 0 %</li>
+        </ol>
+
+        <h2 id="repository">REPOSITORY</h2>
+        <table>
+            <tr><th>Folder / file</th><th>What it is</th></tr>
+            <tr><td><code>benchcode/</code></td><td>Arduino Nano firmware (the folder name must match <code>benchcode.ino</code>)</td></tr>
+            <tr><td><code>servidor/communication.py</code></td><td>Class <code>Nano</code>: serial link, threads, heartbeat, and one method per command</td></tr>
+            <tr><td><code>servidor/run.py</code></td><td>Scratch script to try the class <code>Nano</code></td></tr>
+            <tr><td><code>tests/</code></td><td>Test scripts (see TESTS)</td></tr>
+            <tr><td><code>webpage/</code></td><td>These docs: <code>index.html</code> (home), <code>software.html</code>, <code>hardware.html</code>, <code>style.css</code>, <code>toc.js</code></td></tr>
+            <tr><td><code>.vscode/</code></td><td>VS Code tasks and settings (see TOOLS)</td></tr>
+            <tr><td><code>.gitignore</code></td><td>Files git does not save (<code>__pycache__/</code>, build files...)</td></tr>
+        </table>
+
+        <h2 id="firmware">FIRMWARE</h2>
+        <h3 id="loop">setup() and loop()</h3>
+        <p><b>setup()</b>, once after each reset:</p>
+        <ol>
+            <li>watchdog off (<code>MCUSR = 0</code>, <code>wdt_disable()</code>)</li>
+            <li><code>initialMotorSetup()</code>: ESC signal at 0 %, always the first thing</li>
+            <li><code>Serial.begin(115200)</code> + 1 s wait</li>
+            <li>banner, <code>pinMode()</code> of LEDs, buzzer, button and D6</li>
+            <li><code>READY</code>, always the last line printed</li>
+            <li>watchdog on, in interrupt mode (~250 ms)</li>
+        </ol>
+        <p><b>loop()</b>, thousands of times per second (nothing waits, no <code>delay()</code>):</p>
+        <ol>
+            <li><code>wdt_reset()</code>: "I am alive" for the watchdog</li>
+            <li><code>updateBench()</code>: battery, pot, button, lock state, LEDs</li>
+            <li><code>updateMotor()</code>: 0 % if not UNLOCKED; follows the pot in POT mode</li>
+            <li><code>processInput()</code>: reads a complete line, runs the command, replies</li>
+            <li><code>sendEvents()</code>: <code>EVT POT</code>, <code>EVT ESC</code></li>
+        </ol>
+
+        <h3 id="modules">Modules</h3>
+        <table>
+            <tr><th>File</th><th>Role</th><th>Main functions</th></tr>
+            <tr><td><code>pins.h</code></td><td>All pins and constants (times, limits, voltages)</td><td>&mdash;</td></tr>
+            <tr><td><code>pot.cpp</code></td><td>Potentiometer (A6): burst average + filter, zero with hysteresis</td><td><code>updatePot()</code> <code>potValue()</code> <code>potAtZero()</code></td></tr>
+            <tr><td><code>battery.cpp</code></td><td>Battery: plugged in (D6), voltage (A0), yellow LED, low-voltage cut</td><td><code>updateBattery()</code> <code>batteryConnected()</code> <code>batteryArmed()</code> <code>batteryVolts()</code></td></tr>
+            <tr><td><code>motor.cpp</code></td><td>The ONLY module that drives the ESC (D9). Modes POT / SERVER</td><td><code>initialMotorSetup()</code> <code>updateMotor()</code> <code>motorSet()</code> <code>motorStop()</code></td></tr>
+            <tr><td><code>bench.cpp</code></td><td>Lock state machine LOCKED / UNLOCKING / UNLOCKED, button, red/green LEDs</td><td><code>updateBench()</code> <code>requestUnlock()</code> <code>lockBench()</code> <code>isBenchUnlocked()</code></td></tr>
+            <tr><td><code>safety.cpp</code></td><td>Server heartbeat: when the last line arrived</td><td><code>serverSeenConnection()</code> <code>serverLostConnection()</code></td></tr>
+            <tr><td><code>inputReader.cpp</code></td><td>Serial line reader and parser</td><td><code>readInput()</code> <code>parseInput()</code> <code>paramToLong()</code></td></tr>
+            <tr><td><code>commands.cpp</code></td><td>Command table, one handler per command, events</td><td><code>processInput()</code> <code>sendEvents()</code></td></tr>
+            <tr><td><code>benchcode.ino</code></td><td><code>setup()</code>, <code>loop()</code> and the watchdog <code>ISR</code></td><td>&mdash;</td></tr>
+        </table>
+
+        <h2 id="server">SERVER</h2>
+        <h3 id="nano-class">Class Nano (communication.py)</h3>
+        <p>Opened once; <code>Nano("/dev/ttyUSB0")</code> only returns when the Nano says <code>READY</code>. Always close it in a <code>finally</code>.</p>
+        <table>
+            <tr><th>Part</th><th>What it does</th></tr>
+            <tr><td><code>__init__</code></td><td>Opens the port, waits for <code>READY</code>, starts the 2 threads</td></tr>
+            <tr><td>reader thread <code>_read_loop()</code></td><td>The ONLY reader of the port: <code>EVT</code> &rarr; <code>_handle_event()</code>, replies &rarr; queue <code>replies</code></td></tr>
+            <tr><td>heartbeat thread <code>_heartbeat_loop()</code></td><td>Sends <code>PING</code> when nothing was sent for 250 ms</td></tr>
+            <tr><td><code>send()</code></td><td>Writes one command and waits for its reply (lock: one send at a time; <code>TimeoutError</code> after 1 s)</td></tr>
+            <tr><td><code>_command()</code></td><td><code>send()</code> + only accepts <code>OK</code>; anything else raises <code>NanoError</code></td></tr>
+            <tr><td><code>_handle_event()</code></td><td>Prints the event; <code>EVT ESC</code> updates <code>nano.esc</code> and the flag <code>nano.esc_armed</code></td></tr>
+            <tr><td>command methods</td><td>Translate Python &harr; Nano (see <a href="#commands">COMMANDS</a>)</td></tr>
+            <tr><td><code>close()</code></td><td><code>STOP</code>, stops the threads, closes the port</td></tr>
+        </table>
+        <p><b>Errors:</b> <code>NanoError</code> = the Nano answered but refused. <code>TimeoutError</code> = the Nano did not answer.</p>
+
+        <h3 id="script">A script with the class Nano</h3>
+<pre>
+from communication import Nano, NanoError
+
+nano = Nano("/dev/ttyUSB0")          # opens and waits for READY
+try:
+    print(nano.battery_status())
+    nano.bench_unlock()              # waits for the ESC to be armed
+    if nano.wait_unlocked():         # someone holds the button 2 s
+        nano.set_motor(10)
+except NanoError as e:
+    print("The Nano refused:", e)
+finally:
+    nano.close()                     # STOP + close, whatever happens
+</pre>
+
+        <h2 id="commands">COMMANDS</h2>
+
+        <table>
+            <tr>
+                <th>NANO</th>
+                <th>API</th>
+                <th>Info</th>
+            </tr>
+            <tr>
+                <td><a href="#BAT">BAT</a></td>
+                <td>battery_status()</td>
+                <td>Gets the battery state and voltage</td>
+            </tr>
+            <tr>
+                <td><a href="#ESC">ESC</a></td>
+                <td>esc_state()</td>
+                <td>Gets the ESC state: NONE, ARMING or ARMED</td>
+            </tr>
+            <tr>
+                <td><a href="#POT">POT</a></td>
+                <td>pot_reading()</td>
+                <td>Gets the potentiometer reading (0..1023)</td>
+            </tr>
+            <tr>
+                <td><a href="#BENCH">BENCH</a></td>
+                <td>bench_state()</td>
+                <td>Gets the bench state, the lock reason and the failed checks</td>
+            </tr>
+            <tr>
+                <td><a href="#UNLOCK">UNLOCK</a></td>
+                <td>bench_unlock()<br>wait_unlocked()</td>
+                <td>Requests the unlock, then waits for the button (held 2 s)</td>
+            </tr>
+            <tr>
+                <td><a href="#MOTOR">MOTOR</a></td>
+                <td>motor()<br>set_motor(percent)</td>
+                <td>Reads / sets the throttle (%)</td>
+            </tr>
+            <tr>
+                <td><a href="#MODE">MODE</a></td>
+                <td>mode()<br>set_mode(mode)</td>
+                <td>Reads / sets who controls the throttle: POT or SERVER</td>
+            </tr>
+            <tr>
+                <td><a href="#TONE">TONE</a></td>
+                <td>tone(freq, ms)</td>
+                <td>Plays a tone on the buzzer</td>
+            </tr>
+            <tr>
+                <td><a href="#STOP">STOP</a></td>
+                <td>stop()</td>
+                <td>Motor to 0 % and bench locked</td>
+            </tr>
+            <tr>
+                <td><a href="#PING">PING</a></td>
+                <td>&mdash; (heartbeat)</td>
+                <td>Server sign of life (sent automatically every 250 ms)</td>
+            </tr>
+            <tr>
+                <td><a href="#HELP">HELP</a></td>
+                <td>&mdash;</td>
+                <td>Lists all the commands (for manual use in the Monitor)</td>
+            </tr>
+        </table>
+
+        
+
+        <p><b>Common error:</b> a wrong number of values, e.g. <code>BAT 1</code> &rarr; <code>ERROR BAT expects 0 values: BAT</code>.
+        In Python, an <code>ERROR</code> reply raises <code>NanoError</code> (the Nano refused) and no reply in 1 s raises <code>TimeoutError</code> (the Nano did not answer).</p>
+
+        <h3 id="flow">How a command runs</h3>
+        <p>Every command takes the same path. Only the step in <b>bold</b> is different for each command (see "Flow" in each one).</p>
+        <p><b>1. Python, going out</b> (<code>servidor/communication.py</code>)</p>
+        <ol>
+            <li><b>the method</b> of the command (e.g. <code>nano.battery_status()</code>) calls <code>_command("&lt;COMMAND&gt;")</code></li>
+            <li><code>_command</code> calls <code>send("&lt;COMMAND&gt;")</code></li>
+            <li><code>send</code> locks <code>_send_lock</code> (one send at a time), empties old replies from the queue, writes <code>&lt;COMMAND&gt;\n</code> to the serial port, saves <code>_last_send</code> (heartbeat) and waits on the queue <code>replies</code> (max 1 s)</li>
+        </ol>
+        <p><b>2. Nano</b> (<code>benchcode/</code>, inside <code>loop()</code>)</p>
+        <ol>
+            <li><code>processInput()</code> calls <code>readInput(cmd)</code>: joins bytes until <code>\n</code></li>
+            <li><code>parseInput()</code> splits the line with <code>strtok</code>: <code>cmd.name</code> = the command name, <code>cmd.params</code> = the values</li>
+            <li><code>serverSeenConnection()</code> (<code>safety.cpp</code>): any line counts as a sign of life</li>
+            <li>looks for the name in the table <code>COMMANDS[]</code> (<code>strcmp</code>) and checks the number of values</li>
+            <li>calls <b>the handler</b> of the command (e.g. <code>cmdBat(cmd)</code>), which does its work and prints ONE line: <code>OK ...</code> or <code>ERROR ...</code></li>
+        </ol>
+        <p><b>3. Python, coming back</b></p>
+        <ol>
+            <li>the reader thread <code>_read_loop()</code> reads the line with <code>_read_line()</code>: <code>EVT ...</code> goes to <code>_handle_event()</code>, anything else goes into the queue <code>replies</code></li>
+            <li><code>send</code> takes it from the queue and returns it (no reply in 1 s: <code>TimeoutError</code>)</li>
+            <li><code>_command</code> checks it starts with <code>OK</code> (otherwise: <code>NanoError</code>)</li>
+            <li><b>the method</b> splits the reply (<code>split()</code>) and returns Python data</li>
+        </ol>
+
+        <h3 id="BAT">BAT</h3>
+        <p>Measures the battery voltage through the balance lead (pin A0, 10k / 4.7k divider, average of 16 readings).</p>
+        <p><b>Nano:</b> <code>BAT</code> &rarr; <code>OK BAT GOOD 11.42V</code></p>
+        <p><b>Python:</b> <code>battery_status()</code> &rarr; <code>{"state": "GOOD", "voltage": 11.42}</code></p>
+        <p><b>Values:</b> <code>NONE</code> (&lt; 6 V) | <code>LOW</code> (&lt; 10.2 V) | <code>WEAK</code> (&lt; 10.8 V) | <code>GOOD</code></p>
+        <p><b>Errors:</b> none specific.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdBat()</code> calls <code>batteryVolts()</code> (<code>battery.cpp</code>): <code>settleAnalog(A0)</code>, 16 &times; <code>analogRead(A0)</code>, average, &times; <code>VREF</code> / 1023, undoes the divider</li>
+            <li>compares with <code>BAT_NONE_V</code>, <code>BAT_LOW_V</code>, <code>BAT_WEAK_V</code> &rarr; prints the state and the volts</li>
+            <li>Python: <code>battery_status()</code> takes words 2 and 3, removes the <code>V</code>, <code>float()</code></li>
+        </ol>
+
+        <h3 id="ESC">ESC</h3>
+        <p>The ESC state, seen through pin D6 (the ESC's BEC gives 5 V when the battery is plugged in).</p>
+        <p><b>Nano:</b> <code>ESC</code> &rarr; <code>OK ESC ARMED</code></p>
+        <p><b>Python:</b> <code>esc_state()</code> &rarr; <code>"ARMED"</code></p>
+        <p><b>Values:</b> <code>NONE</code> (battery unplugged) | <code>ARMING</code> (plugged in less than 3 s ago, <code>BAT_ARM_MS</code>: the 3 LEDs rotate) | <code>ARMED</code></p>
+        <p><b>Event:</b> <code>EVT ESC &lt;state&gt;</code> whenever it changes, and once after startup.
+        In Python it is kept in <code>nano.esc</code> and raises the flag <code>nano.esc_armed</code>.</p>
+        <p><b>Errors:</b> none specific.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdEsc()</code> calls <code>escState()</code>: <code>batteryConnected()</code> (D6) and <code>batteryArmed()</code> (connected for <code>BAT_ARM_MS</code>)</li>
+            <li><code>escStateName()</code> &rarr; <code>NONE</code> / <code>ARMING</code> / <code>ARMED</code></li>
+            <li>event: <code>sendEscEvent()</code> (in <code>sendEvents()</code>, every loop) uses the same <code>escState()</code> and prints <code>EVT ESC</code> when it changes</li>
+            <li>Python: <code>esc_state()</code> takes word 2. The event goes to <code>_handle_event()</code>, which sets <code>nano.esc</code> and the flag <code>nano.esc_armed</code></li>
+        </ol>
+
+        <h3 id="POT">POT</h3>
+        <p>The throttle potentiometer position (pin A6), filtered.</p>
+        <p><b>Nano:</b> <code>POT</code> &rarr; <code>OK POT 523</code></p>
+        <p><b>Python:</b> <code>pot_reading()</code> &rarr; <code>523</code></p>
+        <p><b>Values:</b> <code>0..1023</code>. "At zero" when &le; 15 (<code>POT_ZERO</code>), leaves zero above 30 (<code>POT_LEFT_ZERO</code>).</p>
+        <p><b>Event:</b> <code>EVT POT &lt;value&gt;</code> when it moves 5 or more, at most every 100 ms, and once after startup.</p>
+        <p><b>Errors:</b> none specific.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdPot()</code> calls <code>potValue()</code> (<code>pot.cpp</code>): returns the value already filtered by <code>updatePot()</code> (no new reading here)</li>
+            <li><code>updatePot()</code> runs in <code>updateBench()</code>, every <code>POT_SAMPLE_MS</code>: <code>readBurst()</code> (8 readings of A6) + exponential filter + <code>updateZero()</code></li>
+            <li>event: <code>sendPotEvent()</code> prints <code>EVT POT</code> when it moved <code>POT_EVENT_MIN_CHANGE</code> or more</li>
+            <li>Python: <code>pot_reading()</code> takes word 2, <code>int()</code></li>
+        </ol>
+
+        <h3 id="BENCH">BENCH</h3>
+        <p>The bench lock state.</p>
+        <p><b>Nano:</b> <code>BENCH</code> &rarr; <code>OK BENCH LOCKED CHECK NO_BATTERY POT_NOT_ZERO</code></p>
+        <p><b>Python:</b> <code>bench_state()</code> &rarr; <code>{"state": "LOCKED", "reason": "CHECK", "problems": ["NO_BATTERY", "POT_NOT_ZERO"]}</code>
+        (the 3 keys always exist: <code>reason</code> is <code>None</code> when not LOCKED, <code>problems</code> is <code>[]</code> unless the reason is CHECK)</p>
+        <p><b>States:</b> <code>LOCKED</code> | <code>UNLOCKING</code> | <code>UNLOCKED</code></p>
+        <p><b>Reasons</b> (LOCKED only): <code>STARTUP</code> <code>STOP</code> <code>BUTTON</code> <code>CHECK</code> <code>TIMEOUT</code> <code>NO_BATTERY</code> <code>LOW_VOLTAGE</code> <code>SERVER_LOST</code></p>
+        <p><b>Problems</b> (CHECK only): <code>NO_BATTERY</code> <code>ESC_ARMING</code> <code>LOW_VOLTAGE</code> <code>POT_NOT_ZERO</code> <code>BATTERY_CUT</code> <code>SERVER_LOST</code></p>
+        <p><b>Errors:</b> none specific.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdBench()</code> calls <code>printBenchState()</code> (<code>bench.cpp</code>)</li>
+            <li><code>benchStateName()</code> &rarr; the state; if LOCKED, also <code>lockReason</code> (or <code>STARTUP</code>) and <code>printProblems(lockProblems)</code></li>
+            <li>Python: <code>bench_state()</code>: word 2 = state, word 3 = reason (if it exists), words 4.. = problems</li>
+        </ol>
+
+        <h3 id="UNLOCK">UNLOCK</h3>
+        <p><b>Starts</b> the unlock: someone must then hold the button for 2 s (<code>UNLOCK_HOLD_MS</code>) within 30 s (<code>UNLOCK_WAIT_MS</code>).
+        The command alone never unlocks the bench.</p>
+        <p><b>Nano:</b> <code>UNLOCK</code> &rarr; <code>OK UNLOCK UNLOCKING</code> (or <code>OK UNLOCK UNLOCKED</code> if it already was)</p>
+        <p><b>Python:</b> <code>bench_unlock()</code> &rarr; <code>"UNLOCKING"</code>. First waits up to 5 s for the ESC to be armed.<br>
+        <code>wait_unlocked(timeout=30)</code> &rarr; <code>True</code> (unlocked) or <code>False</code> (back to LOCKED, or timeout)</p>
+        <p><b>Errors:</b> <code>ERROR UNLOCK not ready: NO_BATTERY POT_NOT_ZERO</code> (the problems, as in BENCH)</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li>Python: <code>bench_unlock()</code> first waits on the flag <code>esc_armed</code> (raised by <code>EVT ESC ARMED</code>), then sends <code>UNLOCK</code></li>
+            <li><code>cmdUnlock()</code> calls <code>requestUnlock()</code> (<code>bench.cpp</code>), which calls <code>unlockProblems()</code>: <code>batteryConnected()</code>, <code>batteryArmed()</code>, <code>batteryLastVolts()</code>, <code>potAtZero()</code>, <code>batteryLowCut()</code>, <code>serverLostConnection()</code></li>
+            <li>no problems: short beep, <code>benchState = BENCH_UNLOCKING</code> &rarr; <code>OK UNLOCK UNLOCKING</code>. Problems: <code>printUnlockProblems()</code> &rarr; <code>ERROR UNLOCK not ready: ...</code></li>
+            <li>then, in every loop, <code>updateLock()</code> reads the button (<code>readButton()</code>, debounced): held <code>UNLOCK_HOLD_MS</code> &rarr; <code>BENCH_UNLOCKED</code> + long beep (the ONLY place that unlocks)</li>
+            <li>Python: <code>wait_unlocked()</code> asks <code>bench_state()</code> every 0.2 s until <code>UNLOCKED</code> or <code>LOCKED</code></li>
+        </ol>
+
+        <h3 id="MOTOR">MOTOR</h3>
+        <p>The throttle, in %: 0 % = 1000 &micro;s, 100 % = 2000 &micro;s. Never above <code>MOTOR_MAX_PERCENT</code> = 50 % (1500 &micro;s).</p>
+        <p><b>Nano:</b> <code>MOTOR</code> &rarr; <code>OK MOTOR 30</code> (read) &nbsp;|&nbsp; <code>MOTOR 30</code> &rarr; <code>OK MOTOR 30</code> (set)</p>
+        <p><b>Python:</b> <code>motor()</code> &rarr; <code>30</code> &nbsp;|&nbsp; <code>set_motor(30)</code> &rarr; <code>30</code> (the value confirmed by the Nano)</p>
+        <p><b>Rules:</b> setting only works in SERVER mode and with the bench UNLOCKED. <code>MOTOR 0</code> is always accepted in SERVER mode.</p>
+        <p><b>Errors:</b> <code>ERROR MOTOR mode POT</code> | <code>ERROR MOTOR invalid value: 60</code> | <code>ERROR MOTOR bench LOCKED STOP</code></p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li>read: <code>cmdMotor()</code> calls <code>motorPercent()</code> (<code>motor.cpp</code>)</li>
+            <li>set: <code>cmdMotor()</code> checks <code>motorMode()</code> = SERVER and the value (<code>paramToLong</code>, 0..<code>MOTOR_MAX_PERCENT</code>), then <code>motorSet(p)</code></li>
+            <li><code>motorSet()</code> checks again (mode, limit, <code>isBenchUnlocked()</code>) and calls <code>writePercent()</code> &rarr; <code>esc.writeMicroseconds(1000 + p &times; 10)</code> (Servo library, Timer1)</li>
+            <li>also every loop: <code>updateMotor()</code> puts 0 % if the bench is not UNLOCKED (and follows the pot in POT mode)</li>
+            <li>Python: <code>motor()</code> / <code>set_motor()</code> take word 2, <code>int()</code></li>
+        </ol>
+
+        <h3 id="MODE">MODE</h3>
+        <p>Who controls the throttle. Starts in <code>SERVER</code>.</p>
+        <p><b>Nano:</b> <code>MODE</code> &rarr; <code>OK MODE SERVER</code> (read) &nbsp;|&nbsp; <code>MODE POT</code> &rarr; <code>OK MODE POT</code> (set)</p>
+        <p><b>Python:</b> <code>mode()</code> &rarr; <code>"SERVER"</code> &nbsp;|&nbsp; <code>set_mode("POT")</code> &rarr; <code>"POT"</code></p>
+        <p><b>Values:</b> <code>POT</code> (the potentiometer) | <code>SERVER</code> (the <code>MOTOR</code> command)</p>
+        <p><b>Rules:</b> the mode only changes with the bench LOCKED (so the throttle never jumps).
+        In Python, <code>set_mode</code> raises <code>ValueError</code> for anything other than <code>POT</code> or <code>SERVER</code>, before sending.</p>
+        <p><b>Errors:</b> <code>ERROR MODE bench UNLOCKED</code> | <code>ERROR MODE invalid value: XPTO</code></p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li>read: <code>cmdMode()</code> calls <code>motorModeName()</code></li>
+            <li>set: <code>cmdMode()</code> compares the text (<code>strcmp</code> with <code>POT</code> / <code>SERVER</code>), then <code>motorSetMode(m)</code></li>
+            <li><code>motorSetMode()</code> only accepts with <code>isBenchLocked()</code>; changes <code>mode</code> and calls <code>motorStop()</code></li>
+            <li>Python: <code>set_mode()</code> checks <code>POT</code>/<code>SERVER</code> before sending (<code>ValueError</code>), then takes word 2</li>
+        </ol>
+
+        <h3 id="TONE">TONE</h3>
+        <p>Plays a tone on the buzzer (pin D7).</p>
+        <p><b>Nano:</b> <code>TONE 2000 200</code> &rarr; <code>OK TONE 2000 200</code></p>
+        <p><b>Python:</b> <code>tone(2000, 200)</code></p>
+        <p><b>Values:</b> <code>freq</code> 31..10000 Hz, or <code>0</code> to stop &nbsp;|&nbsp; <code>ms</code> 0..5000 (0 or none = until <code>TONE 0</code> or <code>STOP</code>)</p>
+        <p><b>Note:</b> the sound runs in the background: <code>OK</code> arrives at once. <code>STOP</code> (and <code>close()</code>) silences it,
+        so wait the duration before closing.</p>
+        <p><b>Errors:</b> <code>ERROR TONE invalid value: 30</code></p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdTone()</code> reads the values with <code>paramToLong</code> and checks <code>TONE_MIN_HZ</code>..<code>TONE_MAX_HZ</code> and <code>TONE_MAX_MS</code></li>
+            <li><code>0</code> &rarr; <code>noTone()</code>; with ms &rarr; <code>tone(PIN_BUZZER, freq, ms)</code>; without &rarr; <code>tone(PIN_BUZZER, freq)</code> (Arduino, Timer2, in the background)</li>
+            <li>Python: <code>tone()</code> just sends; no data to return</li>
+        </ol>
+
+        <h3 id="STOP">STOP</h3>
+        <p>Motor to 0 %, buzzer off and bench <code>LOCKED STOP</code>. <b>Always accepted</b>, in any state.</p>
+        <p><b>Nano:</b> <code>STOP</code> &rarr; <code>OK STOP</code></p>
+        <p><b>Python:</b> <code>stop()</code> &rarr; <code>True</code>. <code>close()</code> sends it on its own.</p>
+        <p><b>Errors:</b> none.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdStop()</code> calls <code>lockBench()</code> (<code>bench.cpp</code>) &rarr; <code>lockFor("STOP")</code></li>
+            <li><code>lockFor()</code> calls <code>makeSafe()</code> (<code>motorStop()</code> + <code>noTone()</code>), sets <code>BENCH_LOCKED</code> and saves the reason</li>
+            <li>Python: <code>stop()</code>; <code>close()</code> calls it before stopping the threads</li>
+        </ol>
+
+        <h3 id="PING">PING</h3>
+        <p>The server's sign of life (heartbeat). Any line counts: after 1 s without hearing anything (<code>SERVER_TIMEOUT_MS</code>),
+        the bench locks (<code>SERVER_LOST</code>).</p>
+        <p><b>Nano:</b> <code>PING</code> &rarr; <code>OK PING</code></p>
+        <p><b>Python:</b> no method: the heartbeat thread sends it on its own when nothing was sent for 250 ms.</p>
+        <p><b>Errors:</b> none.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>serverSeenConnection()</code> already ran in <code>processInput()</code> (for every line); <code>cmdPing()</code> only prints <code>OK PING</code></li>
+            <li>in every loop, <code>updateLock()</code> asks <code>serverLostConnection()</code> (<code>safety.cpp</code>): more than <code>SERVER_TIMEOUT_MS</code> &rarr; <code>lockFor("SERVER_LOST")</code></li>
+            <li>Python: the thread <code>_heartbeat_loop()</code> calls <code>send("PING")</code> when nothing was sent for <code>HEARTBEAT_S</code></li>
+        </ol>
+
+        <h3 id="HELP">HELP</h3>
+        <p>Lists all the commands, built from the firmware's command table (never out of date). For manual use in the Monitor.</p>
+        <p><b>Nano:</b> <code>HELP</code> &rarr; <code>OK POT TONE BENCH UNLOCK MOTOR MODE BAT ESC STOP PING HELP</code></p>
+        <p><b>Python:</b> no method.</p>
+        <p><b>Flow:</b></p>
+        <ol>
+            <li><code>cmdHelp()</code> goes through the table <code>COMMANDS[]</code> and prints each <code>name</code></li>
+        </ol>
+
+        <h2 id="tests">TESTS</h2>
+        <table>
+            <tr><th>Script</th><th>Motor turns?</th><th>What it tests</th></tr>
+            <tr><td><code>tests/test_commands.py</code></td><td>no</td><td>Every command and reply, automatically (no person needed)</td></tr>
+            <tr><td><code>tests/test_motor.py</code></td><td>yes (no propeller)</td><td>Unlock with the button, motor, tap, STOP, POT mode, heartbeat</td></tr>
+            <tr><td><code>tests/test_ensaio.py</code></td><td>yes</td><td>30 s parabola profile with a live plot (run it in MobaXterm, for the window)</td></tr>
+            <tr><td><code>tests/test_scripts.py</code></td><td>yes (no propeller)</td><td>Example with the class <code>Nano</code>: motor 2 s at 10 %</td></tr>
+        </table>
+        <p>Run from the project folder, with the Monitor and miniterm closed: <code>python3 tests/test_commands.py</code></p>
+
+        <h2 id="tools">TOOLS</h2>
+        <table>
+            <tr><th>VS Code task</th><th>What it does</th></tr>
+            <tr><td>Update Firmware</td><td>Closes whatever holds the port, compiles and uploads <code>benchcode/</code> (Ctrl+Shift+B)</td></tr>
+            <tr><td>Monitor</td><td>Serial monitor at 115200 baud</td></tr>
+            <tr><td>Run Server</td><td><code>python3 servidor/run.py</code></td></tr>
+            <tr><td>Run Docs</td><td>Serves <code>webpage/</code> on port 8080: <code>http://192.168.1.206:8080</code></td></tr>
+        </table>
+        <p>Board: <code>arduino:avr:nano:cpu=atmega328old</code> (old bootloader). Code on GitHub: <code>joaogaspar00/rotor_testbench</code> (private).</p>
+    </div>
+    <script src="toc.js"></script>
+</body>
+</html>

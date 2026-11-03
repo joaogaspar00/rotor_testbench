@@ -4,7 +4,7 @@
     {
       "label": "Update Firmware",
       "type": "shell",
-      "command": "pkill -x serial-monitor; pkill -f '[s]ervidor/run.py'; sleep 0.5; arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old --upload -p /dev/ttyUSB0 ${workspaceFolder}/benchcode",
+      "command": "pkill -x serial-monitor; pkill -f '[s]ervidor/run.py'; pkill -f '[u]vicorn api:app'; sleep 1; arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328old --upload -p /dev/ttyUSB0 ${workspaceFolder}/benchcode",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
@@ -18,6 +18,12 @@
       "label": "Run Server",
       "type": "shell",
       "command": "python3 ${workspaceFolder}/servidor/run.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Dashboard",
+      "type": "shell",
+      "command": "python3 -m uvicorn api:app --app-dir ${workspaceFolder}/servidor --host 0.0.0.0 --port 8000",
       "problemMatcher": []
     },
     {

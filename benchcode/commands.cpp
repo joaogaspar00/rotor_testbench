@@ -92,6 +92,31 @@ static void cmdBat(const Command&) {
     Serial.println('V');
 }
 
+// Estado do ESC, a partir da ligação da bateria (D6). Usado pelo comando ESC E pelo evento EVT ESC,
+// para os dois nunca dizerem coisas diferentes.
+enum EscState { ESC_NONE, ESC_ARMING, ESC_ARMED };
+
+static EscState escState() {
+    if (!batteryConnected()) return ESC_NONE;       // D6 em baixo: bateria não ligada ao ESC
+    if (!batteryArmed())     return ESC_ARMING;     // ligada há menos de BAT_ARM_MS
+    return ESC_ARMED;
+}
+
+static const __FlashStringHelper* escStateName(EscState state) {
+    switch (state) {
+        case ESC_NONE:   return F("NONE");
+        case ESC_ARMING: return F("ARMING");
+        case ESC_ARMED:  return F("ARMED");
+    }
+    return F("?");
+}
+
+// ESC -> "OK ESC <NONE|ARMING|ARMED>"
+static void cmdEsc(const Command&) {
+    Serial.print(F("OK ESC "));
+    Serial.println(escStateName(escState()));
+}
+
 // UNLOCK -> começa o procedimento de desbloqueio (ainda é preciso segurar o botão no banco)
 //   pronto:     "OK UNLOCK UNLOCKING"  (LED vermelho a piscar, à espera do botão)
 //   não pronto: "ERROR UNLOCK not ready: NO_BATTERY POT_NOT_ZERO" (o que falta)
@@ -173,6 +198,7 @@ static const CommandEntry COMMANDS[] = {
     { "MOTOR",  0,  1,   cmdMotor,   "MOTOR [0..100]" },
     { "MODE",   0,  1,   cmdMode,    "MODE [POT|SERVER]" },
     { "BAT",    0,  0,   cmdBat,     "BAT" },
+    { "ESC",    0,  0,   cmdEsc,     "ESC" },
     { "STOP",   0,  0,   cmdStop,    "STOP" },
     { "PING",   0,  0,   cmdPing,    "PING" },
     { "HELP",   0,  0,   cmdHelp,    "HELP" },
@@ -209,8 +235,20 @@ static void sendPotEvent() {
     Serial.println(pot);
 }
 
+// EVT ESC <NONE|ARMING|ARMED>: sempre que o estado do ESC muda (bateria ligada, armou, desligada),
+// e uma vez logo a seguir ao arranque. Muda poucas vezes: não precisa de temporizador.
+static void sendEscEvent() {
+    static int lastSent = -1;              // valor impossível: obriga a um evento logo a seguir ao arranque
+    EscState state = escState();
+    if (state == lastSent) return;
+    lastSent = state;
+    Serial.print(F("EVT ESC "));
+    Serial.println(escStateName(state));
+}
+
 void sendEvents() {
     sendPotEvent();
+    sendEscEvent();
 }
 
 // ---------------------------------------------------------------------------

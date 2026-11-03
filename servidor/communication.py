@@ -7,6 +7,7 @@ BAUD = 115200            # igual ao SERIAL_SPEED do pins.h
 STARTUP_TIMEOUT = 5.0    # s à espera do READY (abrir a porta faz reset ao Nano)
 REPLY_TIMEOUT = 1.0      # s à espera da resposta a um comando (OK ... ou ERROR ...). Ignora os eventos (EVT ...).
 HEARTBEAT_S = 0.25       # s sem enviar nada até o heartbeat enviar PING (o Nano bloqueia ao fim de 1 s: SERVER_TIMEOUT_MS)
+ESC_ARM_TIMEOUT = 5.0    # s que o bench_unlock espera pelo EVT ESC ARMED (o ESC arma 3 s depois de ligar a bateria: BAT_ARM_MS)
 
 # Exceção levantada quando o Nano responde com ERROR
 class NanoError(Exception):
@@ -25,6 +26,8 @@ class Nano:
 
         # Só DEPOIS do READY: durante o arranque quem lê é o _wait_for_ready (duas a ler "roubavam" linhas uma à outra)
         self.replies = queue.Queue()            # respostas (OK/ERROR), da thread de leitura para o send
+        self.esc = None                         # último estado do ESC recebido por evento: NONE, ARMING ou ARMED
+        self.esc_armed = threading.Event()      # bandeira: em cima quando o ESC está armado (EVT ESC ARMED)
         self._send_lock = threading.Lock()      # só um send de cada vez (o servidor e o heartbeat)
         self._last_send = time.monotonic()      # quando foi enviado o último comando
         self._running = True                    # as threads correm enquanto isto for True
@@ -131,6 +134,14 @@ class Nano:
     def _handle_event(self, line):
         print(line)
 
+        # EVT ESC <NONE|ARMING|ARMED>: guarda o estado e levanta/baixa a bandeira (o bench_unlock espera por ela)
+        if line.startswith("EVT ESC "):
+            self.esc = line.split()[2]
+            if self.esc == "ARMED":
+                self.esc_armed.set()
+            else:
+                self.esc_armed.clear()
+
     # ----- Comandos do banco: traduzem entre o Python e o Nano -----
 
     # Devolve o estado e a tensão da bateria
@@ -143,6 +154,11 @@ class Nano:
             return {"state": bat_status, "voltage": float(bat_volts)}   
 
         raise NanoError(f"Unexpected response for BAT command: {answer}")
+
+    # Estado do ESC, perguntado agora: "NONE" (sem bateria), "ARMING" (a armar) ou "ARMED". OK ESC ARMED -> "ARMED"
+    # (Também chega sozinho por evento, em self.esc, sempre que muda.)
+    def esc_state(self):
+        return self._command("ESC").split()[2]
 
     def pot_reading(self):
         answer = self._command("POT")
@@ -176,6 +192,11 @@ class Nano:
     # Se faltar alguma coisa, o Nano responde "ERROR UNLOCK not ready: NO_BATTERY ..." e o _command lança NanoError.
     # ATENÇÃO: não desbloqueia sozinho. Para esperar pelo botão: wait_unlocked().
     def bench_unlock(self):
+        # Espera (sem ciclos) que o ESC esteja armado: logo a seguir a abrir a porta, ou a ligar a bateria,
+        # demora 3 s. Se já estiver armado, não espera nada. A bandeira é levantada pelo EVT ESC ARMED.
+        if not self.esc_armed.wait(ESC_ARM_TIMEOUT):
+            raise NanoError(f"ESC not armed after {ESC_ARM_TIMEOUT:g} s (ESC {self.esc}): is the battery connected?")
+
         answer = self._command("UNLOCK")
         if answer.startswith("OK UNLOCK"):
             parts = answer.split()

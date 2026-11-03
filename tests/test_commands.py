@@ -94,12 +94,16 @@ TESTS = [
     ("BAT",                 r"OK BAT (NONE|GOOD|WEAK|LOW) \d+\.\d\dV"),
     ("BAT 1",               r"ERROR BAT expects 0 values: BAT"),
 
+    # --- ESC: battery plugged into the ESC (D6) and armed (BAT_ARM_MS after plugging) ---
+    ("ESC",                 r"OK ESC (NONE|ARMING|ARMED)"),
+    ("ESC 1",               r"ERROR ESC expects 0 values: ESC"),
+
     # --- PING: the server's heartbeat (any line counts; PING is for when there is nothing else to say) ---
     ("PING",                r"OK PING"),
     ("PING 1",              r"ERROR PING expects 0 values: PING"),
 
     # --- HELP: list built from the table ---
-    ("HELP",                r"OK POT TONE BENCH UNLOCK MOTOR MODE BAT STOP PING HELP"),
+    ("HELP",                r"OK POT TONE BENCH UNLOCK MOTOR MODE BAT ESC STOP PING HELP"),
 
     # --- unknown commands (including the old format) ---
     ("XPTO 1",              r"ERROR unknown command: XPTO"),
@@ -294,7 +298,7 @@ def main():
     send(port, "STOP")
 
     # Events: every EVT line must have the right format
-    bad = [e for e in events if not re.fullmatch(r"EVT POT \d+", e)]
+    bad = [e for e in events if not re.fullmatch(r"EVT POT \d+|EVT ESC (NONE|ARMING|ARMED)", e)]
     ok = not bad
     failures += not ok
     print(f"[{'PASS' if ok else 'FAIL'}] {'event format':36} -> {len(events)} events received"

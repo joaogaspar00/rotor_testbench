@@ -37,3 +37,6 @@ const __FlashStringHelper* benchStateName();
 // O estado e, quando LOCKED, porque foi bloqueado, p. ex.:
 //   "UNLOCKED"   "LOCKED STARTUP"   "LOCKED BUTTON"   "LOCKED CHECK POT_NOT_ZERO"
 void printBenchState();
+
+// Um número que muda sempre que o estado (ou o motivo do bloqueio) muda. Usado pelo EVT BENCH.
+unsigned int benchStateVersion();

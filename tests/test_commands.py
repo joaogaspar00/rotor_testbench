@@ -298,7 +298,7 @@ def main():
     send(port, "STOP")
 
     # Events: every EVT line must have the right format
-    bad = [e for e in events if not re.fullmatch(r"EVT POT \d+|EVT ESC (NONE|ARMING|ARMED)", e)]
+    bad = [e for e in events if not re.fullmatch(r"EVT POT \d+|EVT ESC (NONE|ARMING|ARMED)|EVT BENCH (UNLOCKED|UNLOCKING|LOCKED( \w+)+)", e)]
     ok = not bad
     failures += not ok
     print(f"[{'PASS' if ok else 'FAIL'}] {'event format':36} -> {len(events)} events received"

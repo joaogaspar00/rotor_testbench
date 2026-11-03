@@ -246,9 +246,24 @@ static void sendEscEvent() {
     Serial.println(escStateName(state));
 }
 
+// EVT BENCH <estado> [motivo] [problemas]: sempre que o estado do banco muda (o mesmo texto do comando BENCH),
+// e uma vez logo a seguir ao arranque.
+static void sendBenchEvent() {
+    static bool first = true;
+    static unsigned int lastSent = 0;
+    unsigned int version = benchStateVersion();
+    if (!first && version == lastSent) return;
+    first = false;
+    lastSent = version;
+    Serial.print(F("EVT BENCH "));
+    printBenchState();
+    Serial.println();
+}
+
 void sendEvents() {
     sendPotEvent();
     sendEscEvent();
+    sendBenchEvent();
 }
 
 // ---------------------------------------------------------------------------

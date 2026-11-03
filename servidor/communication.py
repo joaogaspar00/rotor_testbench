@@ -14,6 +14,19 @@ class NanoError(Exception):
     pass
 
 
+# Interpreta a resposta do BENCH ou o EVT BENCH, já partidos em palavras. Por exemplo:
+#   ... BENCH UNLOCKED                             -> {"state": "UNLOCKED", "reason": None,    "problems": []}
+#   ... BENCH LOCKED BUTTON                        -> {"state": "LOCKED",   "reason": "BUTTON", "problems": []}
+#   ... BENCH LOCKED CHECK NO_BATTERY POT_NOT_ZERO -> {"state": "LOCKED",   "reason": "CHECK",
+#                                                     "problems": ["NO_BATTERY", "POT_NOT_ZERO"]}
+# As três chaves existem SEMPRE. (As duas primeiras palavras são "OK BENCH" ou "EVT BENCH".)
+def _parse_bench(parts):
+    state = parts[2]                                    # LOCKED, UNLOCKING ou UNLOCKED
+    reason = parts[3] if len(parts) > 3 else None       # só existe quando LOCKED
+    problems = parts[4:]                                # só quando o motivo é CHECK ([] se não houver)
+    return {"state": state, "reason": reason, "problems": problems}
+
+
 #Ligação ao Nano do banco: a ÚNICA parte do servidor que fala com a porta série
 class Nano:
 
@@ -28,6 +41,8 @@ class Nano:
         self.replies = queue.Queue()            # respostas (OK/ERROR), da thread de leitura para o send
         self.esc = None                         # último estado do ESC recebido por evento: NONE, ARMING ou ARMED
         self.esc_armed = threading.Event()      # bandeira: em cima quando o ESC está armado (EVT ESC ARMED)
+        self.bench = None                       # último estado do banco recebido por evento (o mesmo dicionário do bench_state)
+        self._bench_changed = threading.Condition()   # acorda quem espera (wait_unlocked) sempre que o self.bench muda
         self._send_lock = threading.Lock()      # só um send de cada vez (o servidor e o heartbeat)
         self._last_send = time.monotonic()      # quando foi enviado o último comando
         self._running = True                    # as threads correm enquanto isto for True
@@ -142,6 +157,16 @@ class Nano:
             else:
                 self.esc_armed.clear()
 
+        # EVT BENCH <estado> [motivo] [problemas]: guarda o estado e acorda quem está à espera dele
+        if line.startswith("EVT BENCH "):
+            self._set_bench(_parse_bench(line.split()))
+
+    # Muda o self.bench e acorda quem espera por uma mudança (wait_unlocked)
+    def _set_bench(self, bench):
+        with self._bench_changed:
+            self.bench = bench
+            self._bench_changed.notify_all()
+
     # ----- Comandos do banco: traduzem entre o Python e o Nano -----
 
     # Devolve o estado e a tensão da bateria
@@ -180,11 +205,7 @@ class Nano:
     def bench_state(self):
         answer = self._command("BENCH")
         if answer.startswith("OK BENCH"):
-            parts = answer.split()
-            state = parts[2]                                    # LOCKED, UNLOCKING ou UNLOCKED
-            reason = parts[3] if len(parts) > 3 else None       # só existe quando LOCKED
-            problems = parts[4:]                                # só quando o motivo é CHECK ([] se não houver)
-            return {"state": state, "reason": reason, "problems": problems}
+            return _parse_bench(answer.split())                 # o mesmo que o EVT BENCH
 
         raise NanoError(f"Unexpected response for BENCH command: {answer}")
 
@@ -199,23 +220,21 @@ class Nano:
 
         answer = self._command("UNLOCK")
         if answer.startswith("OK UNLOCK"):
-            parts = answer.split()
-            return parts[2]                                     # UNLOCKING ou UNLOCKED
+            state = answer.split()[2]                           # UNLOCKING ou UNLOCKED
+            # O Nano confirmou: o estado já mudou. Guarda-o já, sem esperar pelo EVT BENCH (que chega logo a seguir),
+            # para o wait_unlocked não ver ainda o LOCKED de antes.
+            self._set_bench({"state": state, "reason": None, "problems": []})
+            return state
 
         raise NanoError(f"Unexpected response for UNLOCK command: {answer}")
 
     # Depois do bench_unlock(): espera que alguém segure o botão 2 s.
     # True = UNLOCKED. False = voltou a LOCKED (TIMEOUT, falhou uma verificação...) ou passou o timeout.
+    # Não pergunta nada ao Nano: dorme até o EVT BENCH dizer que saiu do UNLOCKING.
     def wait_unlocked(self, timeout=30):                        # 30 s, como o UNLOCK_WAIT_MS do Nano
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            state = self.bench_state()["state"]
-            if state == "UNLOCKED":
-                return True
-            if state == "LOCKED":
-                return False                                    # o Nano desistiu: não vale a pena esperar mais
-            time.sleep(0.2)                                     # ainda UNLOCKING: pergunta outra vez
-        return False
+        with self._bench_changed:
+            self._bench_changed.wait_for(lambda: self.bench is not None and self.bench["state"] != "UNLOCKING", timeout)
+            return self.bench is not None and self.bench["state"] == "UNLOCKED"
 
     # Throttle atual, em % (nos dois modos). OK MOTOR 30 -> 30
     def motor(self):

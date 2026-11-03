@@ -21,6 +21,7 @@ void processInput();
 // (nunca "OK"/"ERROR", para o servidor as distinguir das respostas).
 //   EVT POT <valor>                   -> o pot mexeu
 //   EVT ESC <NONE|ARMING|ARMED>       -> a bateria foi ligada/desligada, ou o ESC acabou de armar
-// Os dois são enviados também uma vez logo a seguir ao arranque (o servidor fica a saber o estado inicial).
+//   EVT BENCH <estado> [motivo] [...] -> o estado do banco mudou (o mesmo texto do comando BENCH)
+// Todos são enviados também uma vez logo a seguir ao arranque (o servidor fica a saber o estado inicial).
 // Chamar em cada volta do loop().
 void sendEvents();

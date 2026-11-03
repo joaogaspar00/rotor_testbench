@@ -18,6 +18,8 @@ static unsigned long unlockRequestedAt = 0;
 
 // Porque é que o banco foi bloqueado da última vez (mostrado pelo BENCH). NULL = nunca bloqueado desde o arranque.
 static const __FlashStringHelper* lockReason = NULL;
+// Conta as mudanças de estado (ou de motivo). O EVT BENCH (commands.cpp) é enviado quando este número muda.
+static unsigned int stateVersion = 0;
 static uint8_t lockProblems = 0;           // as verificações que falharam, quando o motivo é CHECK
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,7 @@ static void makeSafe() {
 // Todos os bloqueios passam por aqui, com o motivo (e as verificações que falharam, se houver).
 static void lockFor(const __FlashStringHelper* reason, uint8_t problems = 0) {
     makeSafe();
+    if (benchState != BENCH_LOCKED || lockReason != reason || lockProblems != problems) stateVersion++;   // mudou
     benchState = BENCH_LOCKED;
     holding = false;
     lockReason = reason;
@@ -85,7 +88,10 @@ void lockBench() {
 bool requestUnlock() {
     if (benchState == BENCH_UNLOCKED) return true;     // já está desbloqueado: nada a fazer
     if (unlockProblems() != 0) return false;           // falta alguma coisa: fica como está
-    if (benchState == BENCH_LOCKED) tone(PIN_BUZZER, 2000, 100);   // apito curto: carregue no botão
+    if (benchState == BENCH_LOCKED) {
+        tone(PIN_BUZZER, 2000, 100);                   // apito curto: carregue no botão
+        stateVersion++;                                // LOCKED -> UNLOCKING (outro UNLOCK em UNLOCKING não muda nada)
+    }
     benchState = BENCH_UNLOCKING;                      // só ESPERA pelo botão
     unlockRequestedAt = millis();
     holding = false;
@@ -100,6 +106,10 @@ bool isBenchUnlocked() {
 
 bool isBenchLocked() {
     return benchState == BENCH_LOCKED;
+}
+
+unsigned int benchStateVersion() {
+    return stateVersion;
 }
 
 void printBenchState() {
@@ -162,6 +172,7 @@ static void updateLock() {
                     pressedAt = millis();
                 } else if (millis() - pressedAt >= UNLOCK_HOLD_MS) {
                     benchState = BENCH_UNLOCKED;           // o ÚNICO sítio que desbloqueia
+                    stateVersion++;
                     holding = false;
                     seenReleased = false;                  // este clique não pode voltar a bloquear
                     tone(PIN_BUZZER, 2000, 500);           // apito longo: desbloqueado

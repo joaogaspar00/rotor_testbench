@@ -143,3 +143,78 @@ class Nano:
             return {"state": bat_status, "voltage": float(bat_volts)}   
 
         raise NanoError(f"Unexpected response for BAT command: {answer}")
+
+    def pot_reading(self):
+        answer = self._command("POT")
+        if answer.startswith("OK POT"):
+            parts = answer.split()
+            pot_value = int(parts[2])  
+            return pot_value # devolve o valor do potenciômetro
+
+        raise NanoError(f"Unexpected response for POT command: {answer}")
+
+    # Para o motor e bloqueia o banco. Devolve True se correu bem, ou levanta NanoError se não.
+    def stop(self):
+        answer = self._command("STOP")
+        if answer.startswith("OK STOP"):                 
+            return True 
+        raise NanoError(f"Unexpected response for STOP command: {answer}")
+
+    # Devolve o estado do banco, o motivo do bloqueio e as verificações que falharam. 
+    def bench_state(self):
+        answer = self._command("BENCH")
+        if answer.startswith("OK BENCH"):
+            parts = answer.split()
+            state = parts[2]                                    # LOCKED, UNLOCKING ou UNLOCKED
+            reason = parts[3] if len(parts) > 3 else None       # só existe quando LOCKED
+            problems = parts[4:]                                # só quando o motivo é CHECK ([] se não houver)
+            return {"state": state, "reason": reason, "problems": problems}
+
+        raise NanoError(f"Unexpected response for BENCH command: {answer}")
+
+    # Pede o desbloqueio. Devolve o estado: "UNLOCKING" (agora é preciso segurar o botão 2 s) ou "UNLOCKED" (já estava).
+    # Se faltar alguma coisa, o Nano responde "ERROR UNLOCK not ready: NO_BATTERY ..." e o _command lança NanoError.
+    # ATENÇÃO: não desbloqueia sozinho. Para esperar pelo botão: wait_unlocked().
+    def bench_unlock(self):
+        answer = self._command("UNLOCK")
+        if answer.startswith("OK UNLOCK"):
+            parts = answer.split()
+            return parts[2]                                     # UNLOCKING ou UNLOCKED
+
+        raise NanoError(f"Unexpected response for UNLOCK command: {answer}")
+
+    # Depois do bench_unlock(): espera que alguém segure o botão 2 s.
+    # True = UNLOCKED. False = voltou a LOCKED (TIMEOUT, falhou uma verificação...) ou passou o timeout.
+    def wait_unlocked(self, timeout=30):                        # 30 s, como o UNLOCK_WAIT_MS do Nano
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.bench_state()["state"]
+            if state == "UNLOCKED":
+                return True
+            if state == "LOCKED":
+                return False                                    # o Nano desistiu: não vale a pena esperar mais
+            time.sleep(0.2)                                     # ainda UNLOCKING: pergunta outra vez
+        return False
+
+    # Throttle atual, em % (nos dois modos). OK MOTOR 30 -> 30
+    def motor(self):
+        return int(self._command("MOTOR").split()[2])
+
+    # Só em modo SERVER e com o banco UNLOCKED: põe o throttle. Devolve o valor confirmado pelo Nano.
+    # O limite (MOTOR_MAX_PERCENT) é do Nano: acima dele responde ERROR e o _command lança NanoError.
+    def set_motor(self, percent):
+        return int(self._command(f"MOTOR {percent}").split()[2])
+
+    # Quem controla o throttle: "POT" ou "SERVER". OK MODE SERVER -> "SERVER"
+    def mode(self):
+        return self._command("MODE").split()[2]
+
+    # Muda o modo ("POT" ou "SERVER"). Só com o banco LOCKED (senão o Nano responde ERROR).
+    def set_mode(self, mode):
+        if mode not in ("POT", "SERVER"):
+            raise ValueError(f"modo inválido: {mode!r} (só POT ou SERVER)")
+        return self._command(f"MODE {mode}").split()[2]
+
+    # Toca no buzzer: freq em Hz (0 = parar), ms = duração (0 = até TONE 0 ou STOP).
+    def tone(self, freq, ms=0):
+        self._command(f"TONE {freq} {ms}")

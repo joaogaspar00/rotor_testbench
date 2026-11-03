@@ -5,5 +5,8 @@
       "label": "Docs",
       "onAutoForward": "openBrowser"
     }
-  }
+  },
+  "python.analysis.extraPaths": [
+    "./servidor"
+  ]
 }

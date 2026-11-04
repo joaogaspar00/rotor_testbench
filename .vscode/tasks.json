@@ -29,7 +29,7 @@
     {
       "label": "Run Docs",
       "type": "shell",
-      "command": "python3 -m http.server 8080 --directory ${workspaceFolder}/webpage",
+      "command": "python3 -m http.server 8080 --directory ${workspaceFolder}/docs",
       "problemMatcher": []
     }
   ]

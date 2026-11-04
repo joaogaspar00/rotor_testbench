@@ -1,3 +1,8 @@
+/* letra sem serifa em todas as páginas da documentação */
+body {
+    font-family: sans-serif;
+}
+
 th, td {
     text-align: left;
     padding: 4px 32px 4px 0

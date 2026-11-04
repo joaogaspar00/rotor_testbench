@@ -23,7 +23,13 @@
                 <div id="nano-answer"></div>
             </div>
             <p>
-                <button onclick="post('/connect')"><img src="/assets/connect.png" alt="Connect" style="width: 16px; height: 20px;"></button>
+                Port:
+                <!-- as portas USB e o que está ligado a cada uma; o CONNECT liga à que estiver escolhida -->
+                <select id="port"><option value="">(no USB ports)</option></select>
+                <button onclick="loadPorts()" title="Refresh the list of ports">&#x21bb;</button>
+                <button onclick="connectNano()"><img src="/assets/connect.png" alt="Connect" style="width: 16px; height: 20px;"></button>
+            </p>
+            <p>
                 <button onclick="post('/unlock')">UNLOCK</button>
                 <button onclick="post('/stop')">STOP</button>
                 (after UNLOCK, hold the button on the bench for 2 s)

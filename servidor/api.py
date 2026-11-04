@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import serial
+import serial.tools.list_ports
 
 from communication import DEFAULT_PORT, Nano, NanoError
 
@@ -34,18 +35,35 @@ def client_watchdog():
                 print("AVISO: o STOP falhou:", e)
 
 
-# Tenta ligar ao Nano. Devolve None se correu bem, ou a mensagem de erro (o nano fica None).
-def connect():
+# Larga o Nano atual (se houver), fechando-o sem rebentar mesmo que a porta já tenha morrido
+def drop_nano():
     global nano
+    old, nano = nano, None
+    if old is not None:
+        old.close()
+
+
+# A porta a que o Nano está ligado (o caminho real, p. ex. /dev/ttyUSB0), ou None
+def connected_device():
+    return os.path.realpath(nano.port.port) if nano is not None else None
+
+
+# Tenta ligar ao Nano na porta 'port' (por omissão a PORT). Devolve None se correu bem, ou a mensagem de erro.
+# Se já estiver ligado a OUTRA porta, larga essa primeiro.
+def connect(port=None):
+    global nano
+    port = port or PORT
     with connect_lock:
-        if nano is not None:
-            return None                     # já está ligado
+        if nano is not None and connected_device() == os.path.realpath(port):
+            return None                     # já está ligado a esta porta
         try:
-            nano = Nano(PORT)
-            return None
+            new = Nano(port)                # experimenta a porta nova PRIMEIRO...
         except (serial.SerialException, TimeoutError) as e:
             print("AVISO: sem ligação ao Nano:", e)
-            return str(e)
+            return str(e)                   # ...se falhar, a ligação que havia (se havia) continua
+        drop_nano()                         # só agora larga a antiga
+        nano = new
+        return None
 
 
 # Corre no arranque (antes do yield) e no fim (depois do yield) do servidor.
@@ -80,6 +98,9 @@ def call(name, *args):
         raise HTTPException(status_code=400, detail=str(e))       # o Nano recusou
     except TimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))       # o Nano não respondeu
+    except (serial.SerialException, OSError):
+        drop_nano()                                               # a porta morreu (o USB caiu?): larga o Nano
+        raise HTTPException(status_code=503, detail="Nano disconnected (USB?): choose the port and press CONNECT")
 
 
 # ----- A página -----
@@ -132,12 +153,41 @@ def serial_log(after: int = 0, all: bool = False):
 
 # ----- Ligar -----
 
+# As portas USB disponíveis, e o que está ligado a cada uma (para o menu da dashboard)
+@app.get("/ports")
+def ports():
+    by_id = {}                                          # /dev/ttyUSB0 -> /dev/serial/by-id/... (o nome fixo)
+    folder = "/dev/serial/by-id"
+    if os.path.isdir(folder):
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            by_id[os.path.realpath(path)] = path
+    current = connected_device()
+    found = []
+    for p in serial.tools.list_ports.comports():
+        if p.vid is None:
+            continue                                    # não é um aparelho USB (p. ex. a porta série interna do Pi)
+        found.append({
+            "device": p.device,                         # /dev/ttyUSB0
+            "port": by_id.get(p.device, p.device),      # o que se usa para ligar: o nome fixo, se existir
+            "description": p.description,               # USB2.0-Serial
+            "manufacturer": p.manufacturer,
+            "usb_id": f"{p.vid:04X}:{p.pid:04X}",       # 1A86:7523 = CH340 (o chip USB do Nano)
+            "connected": p.device == current,
+        })
+    return {"ports": found, "connected": current}
+
+
+class ConnectRequest(BaseModel):
+    port: str | None = None                             # sem porta: a PORT por omissão
+
+
 @app.post("/connect")
-def connect_nano():
-    error = connect()
+def connect_nano(req: ConnectRequest):
+    error = connect(req.port)
     if error:
         raise HTTPException(status_code=503, detail=f"Could not connect to the Nano: {error}")
-    return {"connected": True}
+    return {"connected": connected_device()}
 
 
 # ----- Agir -----

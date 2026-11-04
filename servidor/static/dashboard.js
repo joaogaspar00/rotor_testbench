@@ -46,5 +46,41 @@ function show(text, ok) {
 
 show("Stand-by", null);                 // ao abrir a página: ainda não há respostas
 
+// ----- Portas: o menu com as portas USB, e o CONNECT à que estiver escolhida -----
+
+// Pede a lista das portas ao servidor e enche o menu. A que está ligada fica escolhida e marcada com ●
+async function loadPorts() {
+    const select = document.getElementById("port");
+    if (document.activeElement === select) return;              // está a escolher: não mexer no menu aberto
+    try {
+        const r = await fetch("/ports");
+        const data = await r.json();
+        const chosen = select.value;                            // para não perder a escolha ao atualizar
+        select.innerHTML = "";
+        for (const p of data.ports) {
+            const option = document.createElement("option");
+            option.value = p.port;
+            // p. ex.: "/dev/ttyUSB0 - USB2.0-Serial [1A86:7523] ● connected"
+            option.textContent = `${p.device} - ${p.description}${p.manufacturer ? " (" + p.manufacturer + ")" : ""} [${p.usb_id}]`
+                               + (p.connected ? "  ● connected" : "");
+            if (p.connected || p.port === chosen) option.selected = true;
+            select.appendChild(option);
+        }
+        if (data.ports.length === 0) select.innerHTML = '<option value="">(no USB ports)</option>';
+    } catch (e) {
+        select.innerHTML = '<option value="">(no answer from the server)</option>';
+    }
+}
+
+// Liga à porta escolhida no menu (sem nenhuma escolhida: a porta por omissão do servidor)
+async function connectNano() {
+    const port = document.getElementById("port").value;
+    await post("/connect", port ? {port: port} : {});
+    loadPorts();                                                // para o ● passar para a porta nova
+}
+
+loadPorts();
+setInterval(loadPorts, 5000);                                   // apanha um USB ligado ou desligado
+
 refresh();
 setInterval(refresh, 500);

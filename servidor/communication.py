@@ -76,6 +76,8 @@ class Nano:
             self.send("STOP")
         except TimeoutError:
             print("AVISO: o Nano não respondeu ao STOP (vai bloquear sozinho por SERVER_LOST)")
+        except (serial.SerialException, OSError):
+            print("AVISO: a porta já não existe (o USB caiu?): sem STOP")
 
         # 2) Pára as threads: fechar a porta a meio de um readline() rebentava com elas.
         # O heartbeat pára PRIMEIRO: se estiver a meio de um send("PING"), precisa da leitura viva para receber o OK PING.
@@ -83,8 +85,11 @@ class Nano:
         self._heartbeat.join()                  # espera que cada thread acabe a volta em que está
         self._reader.join()
 
-        # 3) Fecha a porta
-        self.port.close()
+        # 3) Fecha a porta (se ainda existir)
+        try:
+            self.port.close()
+        except (serial.SerialException, OSError):
+            pass
         print("Connection closed to Nano on port", self.port.name)
 
     # Espera até o Nano enviar READY, ou dá timeout.
@@ -111,7 +116,11 @@ class Nano:
     # Separa o que chega: eventos (EVT ...) vão para o _handle_event, respostas (OK/ERROR) para a fila do send.
     def _read_loop(self):
         while self._running:
-            line = self._read_line()            # espera no máximo 50 ms (o timeout da porta)
+            try:
+                line = self._read_line()        # espera no máximo 50 ms (o timeout da porta)
+            except (serial.SerialException, OSError):
+                print("AVISO: a porta deixou de responder (o USB caiu?): a leitura parou")
+                return
 
             if line is None:
                 pass                            # nada chegou: volta a ver se ainda deve correr
@@ -164,6 +173,8 @@ class Nano:
                 except TimeoutError:
                     # dentro do ciclo: um erro não pode parar o heartbeat para sempre
                     print("AVISO: o Nano não respondeu ao PING")
+                except (serial.SerialException, OSError):
+                    return                              # a porta morreu (o USB caiu?): não vale a pena insistir
 
     # ----- Registo da porta série -----
 

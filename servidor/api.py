@@ -3,17 +3,20 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+import serial
 
-from communication import Nano, NanoError
+from communication import DEFAULT_PORT, Nano, NanoError
 
-PORT = "/dev/ttyUSB0"
+PORT = os.environ.get("NANO_PORT", DEFAULT_PORT)   # outra porta: NANO_PORT=/dev/ttyUSB1 python3 -m uvicorn ...
 CLIENT_TIMEOUT_S = 2.0      # s sem a dashboard perguntar o /status, com o banco UNLOCKED: STOP (a dashboard fechou?)
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-nano = None                 # o Nano, aberto UMA vez no arranque do servidor (abrir a porta faz reset ao Nano)
+nano = None                 # o Nano, aberto UMA vez (abrir a porta faz reset ao Nano). None = sem ligação
+connect_lock = threading.Lock()   # só uma tentativa de ligação de cada vez
 last_status = time.monotonic()
 running = True
 
@@ -23,7 +26,7 @@ running = True
 def client_watchdog():
     while running:
         time.sleep(0.2)
-        if nano.bench and nano.bench["state"] == "UNLOCKED" and time.monotonic() - last_status > CLIENT_TIMEOUT_S:
+        if nano and nano.bench and nano.bench["state"] == "UNLOCKED" and time.monotonic() - last_status > CLIENT_TIMEOUT_S:
             print("AVISO: a dashboard deixou de responder: STOP")
             try:
                 nano.stop()
@@ -31,24 +34,48 @@ def client_watchdog():
                 print("AVISO: o STOP falhou:", e)
 
 
-# Corre no arranque (antes do yield) e no fim (depois do yield) do servidor
+# Tenta ligar ao Nano. Devolve None se correu bem, ou a mensagem de erro (o nano fica None).
+def connect():
+    global nano
+    with connect_lock:
+        if nano is not None:
+            return None                     # já está ligado
+        try:
+            nano = Nano(PORT)
+            return None
+        except (serial.SerialException, TimeoutError) as e:
+            print("AVISO: sem ligação ao Nano:", e)
+            return str(e)
+
+
+# Corre no arranque (antes do yield) e no fim (depois do yield) do servidor.
+# Se o Nano não estiver ligado, a dashboard arranca na mesma: depois liga-se com o botão CONNECT.
 @asynccontextmanager
 async def lifespan(app):
-    global nano, running
-    nano = Nano(PORT)
+    global running
+    connect()
     threading.Thread(target=client_watchdog, daemon=True).start()
     yield
     running = False
-    nano.close()                        # STOP + fechar
+    if nano is not None:
+        nano.close()                        # STOP + fechar
 
 
 app = FastAPI(lifespan=lifespan)
 
+# Entrega os ficheiros da pasta servidor/assets (imagens...) em /assets/<nome>
+app.mount("/assets", StaticFiles(directory=os.path.join(HERE, "assets")), name="assets")
+# Entrega o CSS e o JavaScript da dashboard (pasta servidor/static) em /static/<nome>
+app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 
-# Chama um método do Nano e transforma os erros dele em erros HTTP, que a dashboard mostra
-def call(method, *args):
+
+# Chama um método do Nano (pelo nome) e transforma os erros em erros HTTP, que a dashboard mostra.
+# Recebe o NOME, e não nano.metodo: com o nano a None, nano.metodo rebentava antes de chegar aqui.
+def call(name, *args):
+    if nano is None:
+        raise HTTPException(status_code=503, detail="Nano not connected: plug it in and press CONNECT")
     try:
-        return method(*args)
+        return getattr(nano, name)(*args)
     except NanoError as e:
         raise HTTPException(status_code=400, detail=str(e))       # o Nano recusou
     except TimeoutError as e:
@@ -57,9 +84,18 @@ def call(method, *args):
 
 # ----- A página -----
 
+# As páginas: cada uma é um template (pasta templates/) que estende o base.html
+templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
+
+
 @app.get("/")
-def dashboard():
-    return FileResponse(os.path.join(HERE, "dashboard.html"))
+def dashboard(request: Request):
+    return templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
+
+
+@app.get("/serial")
+def serial_page(request: Request):
+    return templates.TemplateResponse(request, "serial.html", {"page": "serial"})
 
 
 # ----- Ler -----
@@ -69,14 +105,39 @@ def dashboard():
 def status():
     global last_status
     last_status = time.monotonic()
-    return {
-        "bench": call(nano.bench_state),
-        "esc": call(nano.esc_state),
-        "mode": call(nano.mode),
-        "motor": call(nano.motor),
-        "battery": call(nano.battery_status),
-        "pot": call(nano.pot_reading),
-    }
+    if nano is None:
+        call("bench_state")                   # sem Nano: o call() responde 503
+    with nano.quiet():                        # pedidos de fundo: o Serial da página esconde-os por omissão
+        return {
+            "bench": call("bench_state"),
+            "esc": call("esc_state"),
+            "mode": call("mode"),
+            "motor": call("motor"),
+            "battery": call("battery_status"),
+            "pot": call("pot_reading"),
+        }
+
+
+# O registo da porta série: as linhas depois da número 'after'. all=true inclui o tráfego de fundo (PING, /status)
+@app.get("/serial-log")
+def serial_log(after: int = 0, all: bool = False):
+    global last_status
+    last_status = time.monotonic()            # a página Serial também é sinal de vida (a vigia do cliente)
+    if nano is None:
+        return {"lines": [], "last": after}
+    reset = after > nano.get_log(0)[1]        # o Nano foi religado (CONNECT): o registo recomeçou do 1
+    lines, last = nano.get_log(0 if reset else after, include_quiet=all)
+    return {"lines": lines, "last": last, "reset": reset}
+
+
+# ----- Ligar -----
+
+@app.post("/connect")
+def connect_nano():
+    error = connect()
+    if error:
+        raise HTTPException(status_code=503, detail=f"Could not connect to the Nano: {error}")
+    return {"connected": True}
 
 
 # ----- Agir -----
@@ -91,23 +152,23 @@ class MotorRequest(BaseModel):
 
 @app.post("/unlock")
 def unlock():
-    return {"state": call(nano.bench_unlock)}          # depois é preciso segurar o botão 2 s
+    return {"state": call("bench_unlock")}          # depois é preciso segurar o botão 2 s
 
 
 @app.post("/stop")
 def stop():
-    call(nano.stop)
+    call("stop")
     return {"ok": True}
 
 
 @app.post("/mode")
 def set_mode(req: ModeRequest):
     try:
-        return {"mode": call(nano.set_mode, req.mode)}
+        return {"mode": call("set_mode", req.mode)}
     except ValueError as e:                            # nem POT nem SERVER
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/motor")
 def set_motor(req: MotorRequest):
-    return {"motor": call(nano.set_motor, req.percent)}
+    return {"motor": call("set_motor", req.percent)}

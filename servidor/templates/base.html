@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rotor Testbench - {% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+    <!-- O que é comum a todas as páginas: o título e o menu. Cada página preenche os blocos de baixo. -->
+    <h1>Rotor Testbench DASHBOARD </h1>
+
+    <!-- "page" vem do api.py: marca no menu a página onde se está -->
+    <div class="topnav">
+        <a class="logo" href="https://bench.joaopsgaspar.pt/software.html" target="_blank"><img src="/assets/info.png" alt="Docs"></a>
+        <a {% if page == "dashboard" %}class="active"{% endif %} href="/">Dashboard</a>
+        <a {% if page == "serial" %}class="active"{% endif %} href="/serial">Serial</a>
+    </div>
+
+    {% block content %}{% endblock %}
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

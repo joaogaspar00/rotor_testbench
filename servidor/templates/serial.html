@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}Serial{% endblock %}
+
+{% block content %}
+    <h2>Serial</h2>
+    <label><input type="checkbox" id="show-quiet" onchange="resetSerial()"> show background traffic (PING, status)</label>
+    <!-- o que é enviado (→) e recebido (←) do Nano, as linhas mais recentes em baixo -->
+    <pre id="serial"></pre>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/serial.js"></script>
+{% endblock %}

@@ -1,0 +1,62 @@
+/* Estilos da dashboard (servidor/dashboard.html) */
+
+body { font-family: sans-serif; margin: 30px; }
+th, td { text-align: left; padding: 4px 32px 4px 0; }
+button { margin: 4px 8px 4px 0; padding: 6px 14px; }
+
+/* caixa das respostas do Nano: azul = stand-by, verde = OK, vermelho = erro */
+/* registo da porta série */
+#serial { height: 300px; overflow-y: auto; margin-top: 8px; padding: 8px; background: #111; color: #ddd; font-size: 12px; }
+#serial .tx  { color: #8ab4f8; }      /* enviado ao Nano */
+#serial .rx  { color: #ddd; }         /* recebido do Nano */
+#serial .evt { color: #fdd663; }      /* eventos */
+#serial .err { color: #f28b82; }      /* respostas ERROR */
+
+#nano-answer { margin-top: 16px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; min-height: 1.2em; }
+#nano-answer.ok    { border-color: #2e7d32; background: #e8f5e9; color: #1b5e20; }
+#nano-answer.error { border-color: #c62828; background: #ffebee; color: #b71c1c; }
+#nano-answer.standby { border-color: #24338a; background: #e8e9f5; color: #000000; }
+
+h1 { text-align: center; color: #0d11f5; }        /* o mesmo azul dos títulos da documentação */
+
+.main-container { display: flex; flex-direction: row; gap: 30px; align-items: flex-start; }   /* colunas lado a lado, sem as esticar na altura */
+.left-column  { flex: 1; }                         /* as duas colunas com a mesma largura */
+.right-column { flex: 1; }
+.container { display: flex; align-items: center; gap: 16px; }   /* o título Control e a caixa na mesma linha */
+.container #nano-answer { flex: 1; margin-top: 0; }                /* a caixa ocupa o resto da linha */
+
+/* barra do menu: flex = todos os itens com a mesma altura (a da barra) */
+.topnav {
+  display: flex;
+  background-color: #333;
+}
+
+.topnav a {
+  display: flex;
+  align-items: center;          /* o texto (ou a imagem) ao meio, na vertical */
+  color: #f2f2f2;
+  padding: 14px 16px;
+  text-decoration: none;
+  font-size: 17px;
+}
+
+.topnav a:hover {
+  background-color: #ddd;
+  color: black;
+}
+
+.topnav a.active {
+  background-color: #04AA6D;
+  color: white;
+}
+
+/* o logo: bloco branco da altura da barra, com a imagem centrada */
+.topnav a.logo,
+.topnav a.logo:hover {
+  background-color: #fff;
+  padding: 0 12px;
+}
+
+.topnav a.logo img {
+  height: 28px;                 /* a altura do texto + um pouco: fica alinhado com os outros itens */
+}

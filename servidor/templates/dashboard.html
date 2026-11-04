@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+    <div class="main-container">
+
+        <!-- coluna da esquerda: o estado e os controlos -->
+        <div class="left-column">
+            <h2>State</h2>
+            <table>
+                <tr><th>Bench</th>   <td id="bench">-</td></tr>
+                <tr><th>ESC</th>     <td id="esc">-</td></tr>
+                <tr><th>Mode</th>    <td id="mode">-</td></tr>
+                <tr><th>Motor</th>   <td id="motor">-</td></tr>
+                <tr><th>Battery</th> <td id="battery">-</td></tr>
+                <tr><th>Pot</th>     <td id="pot">-</td></tr>
+            </table>
+
+            <div class="container">
+                <h2>Control</h2>
+                <!-- caixa das respostas do Nano (verde = OK, vermelho = erro, azul = stand-by) -->
+                <div id="nano-answer"></div>
+            </div>
+            <p>
+                <button onclick="post('/connect')"><img src="/assets/connect.png" alt="Connect" style="width: 16px; height: 20px;"></button>
+                <button onclick="post('/unlock')">UNLOCK</button>
+                <button onclick="post('/stop')">STOP</button>
+                (after UNLOCK, hold the button on the bench for 2 s)
+            </p>
+            <p>
+                Mode:
+                <button onclick="post('/mode', {mode: 'SERVER'})">SERVER</button>
+                <button onclick="post('/mode', {mode: 'POT'})">POT</button>
+                (only with the bench LOCKED)
+            </p>
+            <p>
+                Motor:
+                <input id="percent" type="number" min="0" max="50" value="0" style="width: 60px"> %
+                <button onclick="post('/motor', {percent: Number(document.getElementById('percent').value)})">SET</button>
+                <button onclick="post('/motor', {percent: 0})">0 %</button>
+                (SERVER mode, bench UNLOCKED, max 50 %)
+            </p>
+        </div>
+
+        <!-- coluna da direita: vazia, para mais tarde -->
+        <div class="right-column"></div>
+
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/dashboard.js"></script>
+{% endblock %}

@@ -2,7 +2,7 @@ import time
 from communication import Nano
 
 
-nano = Nano("/dev/ttyUSB0")
+nano = Nano()                           # a porta por omissão: DEFAULT_PORT (communication.py)
 
 try:
     

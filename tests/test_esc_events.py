@@ -38,7 +38,7 @@ class EscWatcher(Nano):
 
 
 T0 = time.monotonic()
-nano = EscWatcher("/dev/ttyUSB0")
+nano = EscWatcher()
 try:
     print("À escuta. Desligue e volte a ligar a bateria do ESC. Ctrl+C para terminar.\n")
     while True:

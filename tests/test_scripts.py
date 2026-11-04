@@ -23,7 +23,7 @@ DURATION_S = 2        # s a rodar
 if input("Hélice retirada e motor bem preso? Escreve SIM para continuar: ").strip() != "SIM":
     sys.exit("Cancelado.")
 
-nano = Nano("/dev/ttyUSB0")               # abre a porta e espera pelo READY
+nano = Nano()                             # abre a porta (DEFAULT_PORT) e espera pelo READY
 try:
     print("Bateria:", nano.battery_status())
     print("Banco:  ", nano.bench_state())

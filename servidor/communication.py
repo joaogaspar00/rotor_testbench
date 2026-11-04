@@ -1,12 +1,18 @@
+import collections
+import contextlib
 import queue
 import threading
 import time
 import serial
 
 BAUD = 115200            # igual ao SERIAL_SPEED do pins.h
+# A porta do Nano pelo nome FIXO do aparelho USB (o chip CH340, fabricante 1a86). O /dev/ttyUSB0 pode passar a
+# ttyUSB1 se o USB cair e voltar; este nome não muda. Ver os disponíveis: ls -l /dev/serial/by-id/
+DEFAULT_PORT = "/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0"
 STARTUP_TIMEOUT = 5.0    # s à espera do READY (abrir a porta faz reset ao Nano)
 REPLY_TIMEOUT = 1.0      # s à espera da resposta a um comando (OK ... ou ERROR ...). Ignora os eventos (EVT ...).
 HEARTBEAT_S = 0.25       # s sem enviar nada até o heartbeat enviar PING (o Nano bloqueia ao fim de 1 s: SERVER_TIMEOUT_MS)
+LOG_LINES = 500          # linhas guardadas no registo da porta série (as mais antigas vão saindo)
 ESC_ARM_TIMEOUT = 5.0    # s que o bench_unlock espera pelo EVT ESC ARMED (o ESC arma 3 s depois de ligar a bateria: BAT_ARM_MS)
 
 # Exceção levantada quando o Nano responde com ERROR
@@ -32,9 +38,16 @@ class Nano:
 
     # Utiliza a porta série para falar com o Nano. A porta é aberta no construtor e espera pelo READY enviado pelo NANO.
     # Depois arranca as duas threads: a de leitura (lê a porta o tempo todo) e a do heartbeat (PING).
-    def __init__(self, port):
+    def __init__(self, port=DEFAULT_PORT):
 
-        self.port = serial.Serial(port, BAUD, timeout=0.05)
+        # Registo de tudo o que é enviado e recebido (a dashboard mostra-o). Antes de abrir: o READY também fica registado.
+        self.log = collections.deque(maxlen=LOG_LINES)
+        self._log_seq = 0                       # número da última linha registada
+        self._log_lock = threading.Lock()
+        self._local = threading.local()         # o "quiet" de cada thread (ver quiet())
+        self._pending_quiet = False             # a resposta que se espera é de fundo?
+
+        self.port = serial.Serial(port, BAUD, timeout=0.05, exclusive=True)   # exclusive: um 2.º programa falha logo ("porta ocupada")
         self._wait_for_ready()
 
         # Só DEPOIS do READY: durante o arranque quem lê é o _wait_for_ready (duas a ler "roubavam" linhas uma à outra)
@@ -80,6 +93,8 @@ class Nano:
         start = time.monotonic()
         while True:
             line = self._read_line()
+            if line is not None:
+                self._log("RX", line)
             if line == "READY":
                 print("Bench is ready and connected on port", self.port.name)
                 return
@@ -102,9 +117,11 @@ class Nano:
                 pass                            # nada chegou: volta a ver se ainda deve correr
 
             elif line.startswith("EVT "):
+                self._log("RX", line)
                 self._handle_event(line)
 
             else:
+                self._log("RX", line, self._pending_quiet)   # a resposta é de fundo se o pedido foi
                 self.replies.put(line)
 
     # Envia um comando e devolve a resposta. Quem lê é a thread de leitura: aqui só se espera pela fila.
@@ -117,7 +134,10 @@ class Nano:
             while not self.replies.empty():
                 self.replies.get()
 
+            quiet = getattr(self._local, "quiet", False)
+            self._pending_quiet = quiet
             self.port.write((command + "\n").encode("utf-8"))
+            self._log("TX", command, quiet)
             self._last_send = time.monotonic()  # qualquer comando conta como sinal de vida para o Nano
             try:
                 return self.replies.get(timeout=REPLY_TIMEOUT)
@@ -139,10 +159,43 @@ class Nano:
             time.sleep(0.05)
             if time.monotonic() - self._last_send >= HEARTBEAT_S:
                 try:
-                    self.send("PING")
+                    with self.quiet():
+                        self.send("PING")
                 except TimeoutError:
                     # dentro do ciclo: um erro não pode parar o heartbeat para sempre
                     print("AVISO: o Nano não respondeu ao PING")
+
+    # ----- Registo da porta série -----
+
+    # Guarda uma linha no registo. direction = "TX" (enviada) ou "RX" (recebida). quiet = tráfego de fundo
+    def _log(self, direction, text, quiet=False):
+        with self._log_lock:
+            self._log_seq += 1
+            now = time.time()
+            self.log.append({
+                "seq": self._log_seq,
+                "time": time.strftime("%H:%M:%S", time.localtime(now)) + f".{int(now * 1000) % 1000:03d}",
+                "dir": direction,
+                "text": text,
+                "quiet": quiet,
+            })
+
+    # As linhas do registo depois da número 'after'. Sem quiet=True, deixa de fora o tráfego de fundo.
+    # Devolve (linhas, número da última linha registada).
+    def get_log(self, after=0, include_quiet=False):
+        with self._log_lock:
+            lines = [l for l in self.log if l["seq"] > after and (include_quiet or not l["quiet"])]
+            return lines, self._log_seq
+
+    # Tudo o que se enviar dentro de um "with nano.quiet():" fica marcado como tráfego de fundo (o PING, o /status...)
+    @contextlib.contextmanager
+    def quiet(self):
+        before = getattr(self._local, "quiet", False)
+        self._local.quiet = True
+        try:
+            yield
+        finally:
+            self._local.quiet = before
 
     # Trata UM evento, no momento em que chega. Por agora só o mostra.
     # (Corre na thread de leitura: deve ser rápido, para não atrasar a leitura das respostas.)

@@ -17,7 +17,7 @@ import time
 
 import serial
 
-PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyUSB0"
+PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0"   # o nome fixo do Nano (não muda se o USB cair)
 BAUD = 115200            # same as SERIAL_SPEED in benchcode.ino
 STARTUP_TIMEOUT = 5.0    # s waiting for READY (opening the port resets the Nano)
 REPLY_TIMEOUT = 1.0      # s waiting for the reply to a command

@@ -63,31 +63,47 @@ bool thrustSensorOk(){
     return thrustSensorFound;
 }
 
+long thrustSensorOffset() {
+    return offset;
+}
+
 
 // Inicializa o sensor de pressão/temperatura (BMP280)
 void initialAirSensorSetup() {
     airSensorFound = airSensor.begin(AIR_SENSOR_ADDRESS);
 }
 
-// Inicializa a célula de carga (HX711) e faz a tara (offset)
-void initialThrustSensorSetup() {
-    pinMode(PIN_THRUST_DT, INPUT_PULLUP);
-    pinMode(PIN_THRUST_SCK, OUTPUT);
-    digitalWrite(PIN_THRUST_SCK, LOW);
+
+// Faz a tara da célula de carga (HX711). Se não conseguir ler 10 vezes seguidas, marca a célula como perdida (thrustSensorFound = false).
+void thrustSensorTare() {
 
     long sum = 0;
     for (int i = 0; i < 10; i++) {                          // tara: a média de 10 leituras (~1 s a 10/s)
         unsigned long start = millis();
         while (digitalRead(PIN_THRUST_DT) == HIGH) {
-            if (millis() - start > 1000) {                  // 1 s sem leitura: a HX711 não responde
+            if (millis() - start > THRUST_TARE_TIMEOUT_MS) {                  // 0.5 s sem leitura: a HX711 não responde
                 thrustSensorFound = false;
-                return;                                     // sai da função: o arranque continua
+                return;                                     // sai da função: não há celula de carga
             }
         }
         sum += readThrustSensorRaw();
     }
     offset = sum / 10;
+
     thrustSensorFound = true;                               // chegou aqui: a célula respondeu às 10
+
+}
+
+// Inicializa a célula de carga (HX711) e faz a tara (offset)
+void initialThrustSensorSetup() {
+
+    // Inicializa os pinos da célula de carga (HX711)
+    pinMode(PIN_THRUST_DT, INPUT_PULLUP);
+    pinMode(PIN_THRUST_SCK, OUTPUT);
+    digitalWrite(PIN_THRUST_SCK, LOW);
+
+    // Faz a tara da célula de carga (HX711)
+    thrustSensorTare();
 
 }
 
@@ -96,5 +112,6 @@ void initialSensorsSetup() {
     initialAirSensorSetup();
     initialThrustSensorSetup();
 }
+
 
 

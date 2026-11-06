@@ -13,5 +13,9 @@ void initialThrustSensorSetup();
 
 bool thrustSensorOk();     // a célula está a responder? false se a tara falhou no arranque, ou se a célula deixou de responder (até ao reset)
 
+void thrustSensorTare();
+
+long thrustSensorOffset();  // o zero da célula (a última tara), em contagens da HX711
+
 bool readAir(AirReading& air);
 bool readThrust(ThrustReading& thrust);

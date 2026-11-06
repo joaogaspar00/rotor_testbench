@@ -80,6 +80,42 @@ static void cmdThrust(const Command&) {
     Serial.println(F("N"));
 }
 
+// TARE -> "OK TARE <offset>": o zero da célula passa a ser a força deste momento (média de 10 leituras, ~1 s)
+//         "ERROR TARE bench <estado>" se o banco não estiver LOCKED (a tara com o motor a rodar seria errada)
+//         "ERROR TARE no sensor"      se a célula não respondeu
+
+static void cmdTare(const Command&) {
+
+    // Caso a bancada não esteja bloqueada não pode fazer a tara da célula de carga, porque o motor pode estar a rodar. A tara só é feita com o banco LOCKED.
+    if(!isBenchLocked()) {                               
+        Serial.print(F("ERROR TARE bench "));
+        printBenchState();
+        Serial.println();
+        return;
+    }
+
+    thrustSensorTare();                             
+
+   if (thrustSensorOk()) {
+        Serial.print(F("OK TARE "));
+        Serial.println(thrustSensorOffset());
+    }                 
+    else Serial.println(F("ERROR TARE no sensor"));
+
+}
+
+// THRUST_OFFSET -> "OK THRUST_OFFSET <offset>", p. ex. "OK THRUST_OFFSET -84213": o zero da célula (a última
+//                  tara, no arranque ou com o TARE), em contagens da HX711. Só lê: responde logo, não mexe no zero.
+//                  "ERROR THRUST_OFFSET no sensor" se não há célula
+static void cmdThrustOffset(const Command&) {
+    if (!thrustSensorOk()) {
+        Serial.println(F("ERROR THRUST_OFFSET no sensor"));
+        return;
+    }
+    Serial.print(F("OK THRUST_OFFSET "));
+    Serial.println(thrustSensorOffset());
+}
+
 // STOP -> bloqueia o banco e põe tudo em segurança. SEMPRE aceite.
 static void cmdStop(const Command&) {      // não usa o cmd: parâmetro sem nome
     lockBench();
@@ -236,12 +272,15 @@ static void cmdHelp(const Command&);       // definida depois da tabela, porque 
 static const CommandEntry COMMANDS[] = {
 //   nome       min max  função      uso
     { "POT",    0,  0,   cmdPot,     "POT" },
-    {"AIR",     0,  0,   cmdAir,     "AIR" },
+    { "AIR",    0,  0,   cmdAir,     "AIR" },
     { "TONE",   1,  2,   cmdTone,    "TONE <freq> [ms]" },
     { "BENCH",  0,  0,   cmdBench,   "BENCH" },
     { "UNLOCK", 0,  0,   cmdUnlock,  "UNLOCK" },
     { "MOTOR",  0,  1,   cmdMotor,   "MOTOR [0..100]" },
     {"THRUST",  0,  0,   cmdThrust,  "THRUST" },
+    {"TARE",    0 , 0,   cmdTare,    "TARE" },
+    { "THRUST_OFFSET", 0, 0, cmdThrustOffset, "THRUST_OFFSET" },
+    { "ESC",    0,  0,   cmdEsc,     "ESC" },
     { "MODE",   0,  1,   cmdMode,    "MODE [POT|SERVER]" },
     { "BAT",    0,  0,   cmdBat,     "BAT" },
     { "ESC",    0,  0,   cmdEsc,     "ESC" },

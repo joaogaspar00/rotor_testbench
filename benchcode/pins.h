@@ -84,6 +84,7 @@ const int PIN_THRUST_SCK = A2;
 const float GRAMS_PER_COUNT = 0.004862;     
 const float G_TO_N = 0.00980665;            // 1 g de massa pesa 0,00980665 N
 const unsigned long THRUST_SENSOR_TIMEOUT_MS = 150; // Tempo máximo que a célula de carga pode estar sem responder. Se passar disto, marca como perdida.
+const unsigned long THRUST_TARE_TIMEOUT_MS = 500;  // Tempo máximo que a célula de carga pode estar sem responder durante a tara. Se passar disto, marca como perdida.
 
 // O Nano tem UM só conversor analógico, partilhado por todos os pinos analógicos. Logo a seguir a mudar de pino, a primeira leitura ainda se "lembra" do pino anterior. Chamar isto UMA vez antes das leituras de um pino; depois usar analogRead() normalmente.
 inline void settleAnalog(int pin) {

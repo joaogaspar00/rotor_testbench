@@ -57,11 +57,22 @@
         </div>
 
         <!-- coluna da direita: vazia, para mais tarde -->
-        <div class="right-column"></div>
+        <div class="right-column">
+                <h2>Graph</h2>
+                <p>Thrust (gf) vs Time (s)</p>
+                
+            <div class="container-graph"> 
+                <button onclick="startPlot()"><img src="/assets/start.png" alt="Start" style="width: 16px; height: 20px;"></button>
+                <button onclick="stopPlot()"><img src="/assets/stop.png" alt="Stop" style="width: 16px; height: 20px;"></button>
+                <canvas id="graph"></canvas>  
+            </div>
+        </div>
+
 
     </div>
 {% endblock %}
 
 {% block scripts %}
     <script src="/static/dashboard.js"></script>
+    <script src="/static/plots.js"></script>
 {% endblock %}

@@ -15,6 +15,9 @@ HEARTBEAT_S = 0.25       # s sem enviar nada até o heartbeat enviar PING (o Nan
 LOG_LINES = 500          # linhas guardadas no registo da porta série (as mais antigas vão saindo)
 ESC_ARM_TIMEOUT = 5.0    # s que o bench_unlock espera pelo EVT ESC ARMED (o ESC arma 3 s depois de ligar a bateria: BAT_ARM_MS)
 
+TARE_TIMEOUT = 3.0       # s à espera do OK TARE: a tara demora ~1 s (10 leituras da HX711 a 10/s)
+
+
 # Exceção levantada quando o Nano responde com ERROR
 class NanoError(Exception):
     pass
@@ -136,7 +139,7 @@ class Nano:
     # Envia um comando e devolve a resposta. Quem lê é a thread de leitura: aqui só se espera pela fila.
     # Pode ser chamado de várias threads (servidor e heartbeat): o cadeado garante um send de cada vez.
     # É responsável por saber se o nano respondeu em tempo
-    def send(self, command):
+    def send(self, command, timeout=REPLY_TIMEOUT):
         with self._send_lock:                   # fecha à entrada, abre à saída (mesmo com erro)
 
             # Deita fora respostas atrasadas de um comando anterior que deu timeout: senão este send recebia a resposta errada
@@ -149,13 +152,13 @@ class Nano:
             self._log("TX", command, quiet)
             self._last_send = time.monotonic()  # qualquer comando conta como sinal de vida para o Nano
             try:
-                return self.replies.get(timeout=REPLY_TIMEOUT)
+                return self.replies.get(timeout=timeout)  # espera pela resposta (OK/ERROR)
             except queue.Empty:
                 raise TimeoutError("No response from Nano for command: " + command)
 
     # Envia um comando e devolve a resposta se for OK, ou levanta NanoError se for ERROR.
-    def _command(self, command):
-        answer = self.send(command)
+    def _command(self, command, timeout=REPLY_TIMEOUT):
+        answer = self.send(command, timeout=timeout)
         if answer.startswith("OK"):           
             return answer
         
@@ -294,6 +297,29 @@ class Nano:
             return pot_value # devolve o valor do potenciômetro
 
         raise NanoError(f"Unexpected response for POT command: {answer}")
+
+    # Refaz o zero da célula: a força deste momento passa a ser 0. Devolve o offset novo: OK TARE -241554 -> -241554
+    # Demora ~1 s (TARE_TIMEOUT dá margem). Só com o banco LOCKED; senão (ou sem célula) o Nano responde ERROR
+    # e o _command lança NanoError.
+    def tare_thrust_sensor(self):
+        answer = self._command("TARE", timeout=TARE_TIMEOUT)
+        if answer.startswith("OK TARE"):
+            return int(answer.split()[2])                       # o offset novo, em contagens da HX711
+        raise NanoError(f"Unexpected response for TARE command: {answer}")
+
+    # O zero da célula (a última tara), em contagens da HX711: OK THRUST_OFFSET -241554 -> -241554
+    # None se não há célula (ERROR THRUST_OFFSET no sensor). Só lê: não mexe no zero.
+    def thrust_offset(self):
+        try:
+            answer = self._command("THRUST_OFFSET")
+        except NanoError as e:
+            if "no sensor" in str(e):
+                return None                                     # não há célula: não é uma avaria
+            raise                                               # outro erro: volta a levantá-lo, igual
+
+        if answer.startswith("OK THRUST_OFFSET"):
+            return int(answer.split()[2])
+        raise NanoError(f"Unexpected response for THRUST_OFFSET command: {answer}")
 
     # Para o motor e bloqueia o banco. Devolve True se correu bem, ou levanta NanoError se não.
     def stop(self):

@@ -4,6 +4,7 @@
 #include "bench.h"
 #include "motor.h"
 #include "commands.h"
+#include "sensors.h"
 
 
 void setup() {
@@ -28,6 +29,9 @@ void setup() {
     pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
     pinMode(PIN_BUTTON, INPUT_PULLUP);
     pinMode(PIN_BAT_DETECT, INPUT);           // external 100 kOhm pull-down
+
+    Wire.setWireTimeout(25000, true);   // I2C: desiste ao fim de 25 ms em vez de encravar (fio mal ligado...)
+    initialSensorsSetup();
 
     // MANTER COMO O ULTIMO PASSO PARA O RASPBERRY PI SABER QUE O ARDUINO ESTÁ PRONTO PARA RECEBER COMANDOS
     Serial.println(F("READY"));

@@ -5,6 +5,7 @@
 #include "pot.h"
 #include "pins.h"
 #include "safety.h"
+#include "sensors.h"
 
 // ---------------------------------------------------------------------------
 // Funções de resposta: todas as respostas têm o mesmo formato
@@ -34,6 +35,49 @@ static void replyInvalidValue(const Command& cmd, const char* value) {
 // POT -> lê o potenciómetro (A6, filtrado)
 static void cmdPot(const Command& cmd) {
     replyOk(cmd, potValue());
+}
+
+// AIR -> "OK AIR <temperatura>C <pressão>hPa <densidade>kg/m3", p. ex. "OK AIR 23.55C 997.98hPa 1.1718kg/m3"
+//        "ERROR AIR no sensor" se o sensor não foi encontrado no arranque
+static void cmdAir(const Command&) {
+    AirReading air;                                  // 1) uma "caixa" vazia para as três leituras
+
+    if (!readAir(air)) {                             // 2) o readAir enche a caixa; devolve false se não há sensor
+        Serial.println(F("ERROR AIR no sensor"));
+        return;
+    }
+
+    Serial.print(F("OK AIR "));                      // 3) escreve a resposta, peça a peça
+    Serial.print(air.temperature, 2);                //    23.55
+    Serial.print(F("C "));
+    Serial.print(air.pressure / 100.0, 2);           //    Pa -> hPa: 997.98
+    Serial.print(F("hPa "));
+    Serial.print(air.density, 4);                    //    1.1718
+    Serial.println(F("kg/m3"));
+}
+
+// THRUST -> "OK THRUST <valor>gf <valor>Newtons", p. ex. "OK THRUST 1234gf 12.08Newtons"
+//           "ERROR THRUST no sensor" se não há célula (a tara falhou no arranque, ou já houve um timeout)
+//           "ERROR THRUST timeout"   se a célula deixou de responder AGORA (a partir daí: "no sensor", até ao reset)
+static void cmdThrust(const Command&) {
+    ThrustReading thrust;                            // 1) uma "caixa" vazia para as duas leituras
+
+    if (!thrustSensorOk()) {                         // 2) primeiro: há célula? (ANTES do readThrust, que a
+        Serial.println(F("ERROR THRUST no sensor")); //    dá como perdida quando falha)
+        return;
+    }
+
+    if (!readThrust(thrust)) {                       // 3) o readThrust enche a caixa; aqui, false = timeout
+        Serial.println(F("ERROR THRUST timeout"));
+        return;
+    }
+
+    // resposta com as leituras
+    Serial.print(F("OK THRUST "));                 
+    Serial.print(thrust.gf, 0);                 
+    Serial.print(F("gf "));
+    Serial.print(thrust.newtons, 2);               
+    Serial.println(F("N"));
 }
 
 // STOP -> bloqueia o banco e põe tudo em segurança. SEMPRE aceite.
@@ -192,10 +236,12 @@ static void cmdHelp(const Command&);       // definida depois da tabela, porque 
 static const CommandEntry COMMANDS[] = {
 //   nome       min max  função      uso
     { "POT",    0,  0,   cmdPot,     "POT" },
+    {"AIR",     0,  0,   cmdAir,     "AIR" },
     { "TONE",   1,  2,   cmdTone,    "TONE <freq> [ms]" },
     { "BENCH",  0,  0,   cmdBench,   "BENCH" },
     { "UNLOCK", 0,  0,   cmdUnlock,  "UNLOCK" },
     { "MOTOR",  0,  1,   cmdMotor,   "MOTOR [0..100]" },
+    {"THRUST",  0,  0,   cmdThrust,  "THRUST" },
     { "MODE",   0,  1,   cmdMode,    "MODE [POT|SERVER]" },
     { "BAT",    0,  0,   cmdBat,     "BAT" },
     { "ESC",    0,  0,   cmdEsc,     "ESC" },

@@ -74,6 +74,16 @@ const unsigned long BLINK_HOLD_MS = 200;      // pisca mais rápido enquanto se 
 // Servidor 
 const unsigned long SERVER_TIMEOUT_MS = 1000; // Tempo máximo que a bancada pode estar sem ouvir do servidor. Se passar disto, bloqueia e pára o motor (motor a 0 %).
 
+// Sensor de propriedades do ar (BMP280)
+const uint8_t AIR_SENSOR_ADDRESS = 0x76;    // SDO ligado ao GND (0x77 se estiver ligado ao VCC)
+const float R_DRY_AIR = 287.05;         // constante do ar seco, J/(kg K)
+
+// Sensor de força de propulsão (célula de carga + HX711)
+const int PIN_THRUST_DT = A1;
+const int PIN_THRUST_SCK = A2;
+const float GRAMS_PER_COUNT = 0.004862;     
+const float G_TO_N = 0.00980665;            // 1 g de massa pesa 0,00980665 N
+const unsigned long THRUST_SENSOR_TIMEOUT_MS = 150; // Tempo máximo que a célula de carga pode estar sem responder. Se passar disto, marca como perdida.
 
 // O Nano tem UM só conversor analógico, partilhado por todos os pinos analógicos. Logo a seguir a mudar de pino, a primeira leitura ainda se "lembra" do pino anterior. Chamar isto UMA vez antes das leituras de um pino; depois usar analogRead() normalmente.
 inline void settleAnalog(int pin) {

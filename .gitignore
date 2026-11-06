@@ -11,3 +11,6 @@ build/
 # Editor e sistema
 .DS_Store
 *.swp
+
+# Registos de medições (dados, não código)
+tests/logs/

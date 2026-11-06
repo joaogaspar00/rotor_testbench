@@ -1,193 +1,208 @@
 #!/usr/bin/env python3
-# Ensaio: runs a throttle profile on the motor and plots it in real time.
+# Pequeno ensaio COM A HÉLICE: a curva da força em função do throttle.
 #
-#   !!! The motor WILL TURN. Motor firmly fixed, nobody near the propeller !!!
+#   !!! O MOTOR VAI RODAR COM A HÉLICE: motor bem preso, ninguém à frente nem ao lado da hélice !!!
 #
-# The profile is a function of time (profile(t) -> %). To make another ensaio,
-# write another function and point PROFILE to it.
+# Em cada degrau de throttle: espera ESTABILIZAR_S (o motor acelera) e mede durante MEDIR_S
+# (THRUST em contínuo, ~10 leituras/s, e a tensão da bateria). O primeiro e o último degrau são
+# a 0 %: o zero da célula antes e depois (a força é corrigida pelo zero de antes; a diferença
+# entre os dois é a deriva durante o ensaio).
 #
-# Profile % are RELATIVE to the firmware limit: 100 % here = MOTOR_MAX_PERCENT on the Nano
-# (50 % throttle = 1500 us). The real maximum is set ONLY in the firmware (pins.h).
+# No fim mostra a curva no terminal e grava em ensaios/:
+#   <data>_resumo.csv     uma linha por degrau (a curva)
+#   <data>_leituras.csv   todas as leituras, também as de estabilização (para ver os transitórios)
+#   <data>.png            os gráficos: a força e o throttle no tempo, e a curva força × throttle
+#                         (abre-se no VS Code com um clique; não precisa de janela nem de X11)
 #
-# If anything looks wrong: tap the button (it always locks) or close the plot window.
+# Se algo parecer errado: um toque no botão bloqueia sempre, ou Ctrl+C (o script envia STOP e grava
+# o que já mediu).
 #
-# Run (with the monitor CLOSED):
-#   python3 test_ensaio.py
-#   python3 test_ensaio.py /dev/ttyUSB1      (another port)
+# Correr (com a dashboard e o monitor FECHADOS):
+#   python3 tests/test_ensaio.py
+#   python3 tests/test_ensaio.py /dev/ttyUSB1      (outra porta)
 
+import csv
 import os
-import re
+import statistics
 import sys
 import time
 
+import matplotlib
+matplotlib.use("Agg")                 # só grava ficheiros: nunca abre janelas (corre no terminal do VS Code)
 import matplotlib.pyplot as plt
-import serial
 
-# works both as "python3 tests/test_ensaio.py" and "python3 -m tests.test_ensaio"
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-import tests.test_commands as tc     # wait_ready(), read_line(), write(), heartbeat, PORT, BAUD
-import tests.test_motor as tm        # reply(), unlock()
+import test_commands as tc
+import test_motor as tm               # barra(), linha_viva(), confirmar(), mostrar_estado(), desbloquear()
+from communication import NanoError
+from test_commands import negrito, tenue, verde, vermelho, amarelo, ciano
 
-MOTOR_MAX_PERCENT = 50   # same as MOTOR_MAX_PERCENT in pins.h: the real throttle at 100 % here
-SEND_PERIOD = 0.05       # s between MOTOR commands (20 per second)
-COUNTDOWN_S = 3          # s between "unlocked" and the start of the profile
-
-# ---------------------------------------------------------------------------
-# Profiles: profile(t) -> throttle % wanted at t seconds, 0..100 relative to MOTOR_MAX_PERCENT
-# ---------------------------------------------------------------------------
-
-PARABOLA_S = 30.0        # total duration
-PARABOLA_PEAK = 100.0    # % at the middle (t = 15 s)
+DEGRAUS = [0, 10, 20, 30, 40, 50, 0]  # % de throttle (o MOTOR_MAX_PERCENT do Nano é 50)
+ESTABILIZAR_S = 2                     # s à espera que o motor estabilize em cada degrau
+MEDIR_S = 3                           # s a medir em cada degrau (~30 leituras)
+PASTA = os.path.join(tc.ROOT, "ensaios")
 
 
-def parabola(t):
-    """0 % at t=0, PARABOLA_PEAK at t=PARABOLA_S/2, 0 % again at t=PARABOLA_S."""
-    half = PARABOLA_S / 2
-    return PARABOLA_PEAK * (1 - ((t - half) / half) ** 2)
+def medir_degrau(nano, percent, t0, leituras):
+    """Um degrau: põe o throttle, espera e mede. Junta as leituras a 'leituras'. Devolve o resumo do degrau."""
+    nano.set_motor(percent)
+    inicio = time.monotonic()
+    fim = inicio + ESTABILIZAR_S + MEDIR_S
+    gfs, volts = [], []
+    while (agora := time.monotonic()) < fim:
+        fase = "estabilizar" if agora - inicio < ESTABILIZAR_S else "medir"
+        forca = nano.thrust_readings()                 # espera pela leitura seguinte (~100 ms)
+        bat = nano.battery_status()["voltage"]
+        leituras.append({"t_s": round(time.monotonic() - t0, 3), "throttle_pct": percent, "fase": fase,
+                         "forca_gf": forca["gf"], "forca_N": forca["newtons"], "bateria_V": bat})
+        if fase == "medir":
+            gfs.append(forca["gf"])
+            volts.append(bat)
+        cor_fase = amarelo if fase == "estabilizar" else verde
+        tm.linha_viva(f"    {tm.barra(percent)} {percent:3d} %   {forca['gf']:7.0f} gf   {bat:5.2f} V   "
+                      f"{cor_fase(fase)} {tenue(f'{fim - agora:3.1f} s')}")
+    ar = nano.air_readings()
+    return {
+        "throttle_pct": percent,
+        "n": len(gfs),
+        "forca_gf": statistics.mean(gfs),
+        "desvio_gf": statistics.pstdev(gfs),
+        "bateria_V": statistics.mean(volts),
+        "temp_C": ar["temperature"] if ar else None,
+        "pressao_hPa": ar["pressure"] if ar else None,
+        "densidade_kg_m3": ar["density"] if ar else None,
+    }
 
 
-PROFILE = parabola
-DURATION = PARABOLA_S
+def mostrar_curva(degraus, zero):
+    """A curva no terminal: uma barra por degrau, com a força já corrigida pelo zero."""
+    tc.seccao("Curva · força em função do throttle (corrigida pelo zero inicial)")
+    maximo = max((d["forca_corrigida_gf"] for d in degraus), default=1) or 1
+    for d in degraus:
+        f = d["forca_corrigida_gf"]
+        cheio = max(0, round(40 * f / maximo))
+        extra = tenue(f"±{d['desvio_gf']:.1f}  {d['bateria_V']:.2f} V")
+        print(f"    {d['throttle_pct']:3d} %  {ciano('█' * cheio)}{' ' * (40 - cheio)} {negrito(f'{f:7.1f}')} gf  {extra}")
+    print(tenue(f"    zero inicial: {zero:.1f} gf"))
 
 
-# ---------------------------------------------------------------------------
-
-def to_motor(relative):
-    """Relative % (0..100) -> the real % sent with MOTOR (0..MOTOR_MAX_PERCENT)."""
-    return round(min(max(relative, 0.0), 100.0) * MOTOR_MAX_PERCENT / 100)
-
-
-def to_relative(real):
-    """Real % from the Nano -> relative % (for the plot)."""
-    return real * 100 / MOTOR_MAX_PERCENT
-
-
-def motor(port, percent):
-    """Sends MOTOR <percent> and returns the confirmed %, or None (and prints why) if refused.
-    Faster than tc.send(): does not wait the extra silence time after the reply."""
-    tc.write(port, f"MOTOR {percent}\n")
-    line = tc.read_line(port, time.monotonic() + tc.REPLY_TIMEOUT)
-    m = re.fullmatch(r"OK MOTOR (\d+)", line or "")
-    if not m:
-        print(f"      'MOTOR {percent}' -> {line}")
-        return None
-    return int(m.group(1))
+def gravar(nome, degraus, leituras):
+    """Grava os dois CSV. Devolve os caminhos."""
+    ficheiros = []
+    for sufixo, linhas in (("resumo", degraus), ("leituras", leituras)):
+        if not linhas:
+            continue
+        caminho = os.path.join(PASTA, f"{nome}_{sufixo}.csv")
+        with open(caminho, "w", newline="") as f:
+            escritor = csv.DictWriter(f, fieldnames=list(linhas[0].keys()))
+            escritor.writeheader()
+            escritor.writerows(linhas)
+        ficheiros.append(caminho)
+    return ficheiros
 
 
-def setup_plot():
-    """Window with the wanted profile (dashed) and the live line, both in relative %."""
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ts = [i * DURATION / 500 for i in range(501)]
-    ax.plot(ts, [PROFILE(t) for t in ts], "--", color="gray", label="pedido")
-    live, = ax.plot([], [], color="tab:blue", linewidth=2, label="confirmado pelo Nano")
-    ax.set_xlim(0, DURATION)
-    ax.set_ylim(0, 105)
-    ax.set_xlabel("tempo (s)")
-    ax.set_ylabel(f"throttle (% de {MOTOR_MAX_PERCENT} % real)")
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="upper right")
-    fig.canvas.draw()
-    plt.pause(0.001)
-    return fig, ax, live
+def grafico(nome, degraus, leituras, zero):
+    """Grava o PNG: em cima a força e o throttle no tempo, em baixo a curva força × throttle."""
+    fig, (cima, baixo) = plt.subplots(2, 1, figsize=(10, 9), gridspec_kw={"height_ratios": [3, 2]})
+    fig.suptitle(f"Ensaio {nome}", fontweight="bold")
 
+    # 1) No tempo: cada leitura (as de estabilização mais claras) e o throttle por trás, noutro eixo
+    for fase, cor, rotulo in (("estabilizar", "#9ecae1", "a estabilizar"), ("medir", "#08519c", "medida")):
+        pontos = [l for l in leituras if l["fase"] == fase]
+        cima.plot([l["t_s"] for l in pontos], [l["forca_gf"] - zero for l in pontos],
+                  ".", color=cor, markersize=4, label=f"força ({rotulo})")
+    cima.set_xlabel("tempo (s)")
+    cima.set_ylabel("força (gf, corrigida pelo zero)")
+    cima.grid(True, alpha=0.3)
+    throttle = cima.twinx()
+    throttle.step([l["t_s"] for l in leituras], [l["throttle_pct"] for l in leituras],
+                  where="post", color="#e6550d", alpha=0.6, label="throttle")
+    throttle.set_ylabel("throttle (%)", color="#e6550d")
+    throttle.set_ylim(0, 100)
+    linhas_a, rotulos_a = cima.get_legend_handles_labels()
+    linhas_b, rotulos_b = throttle.get_legend_handles_labels()
+    cima.legend(linhas_a + linhas_b, rotulos_a + rotulos_b, loc="upper left")
 
-def run_profile(port, fig, ax, live):
-    """Sends the profile every SEND_PERIOD. Returns the rows (t, wanted, sent, confirmed):
-    wanted in relative %, sent and confirmed in real % (what MOTOR uses)."""
-    rows = []
-    t0 = time.monotonic()
-    next_send = t0
-    while True:
-        t = time.monotonic() - t0
-        if t > DURATION:
-            break
-        if not plt.fignum_exists(fig.number):
-            print("Plot window closed: stopping.")
-            break
+    # 2) A curva: a média de cada degrau com o desvio. O 0 % final fica à parte: mostra a deriva do zero
+    curva = degraus[:-1] if len(degraus) > 1 and degraus[-1]["throttle_pct"] == 0 else degraus
+    baixo.errorbar([d["throttle_pct"] for d in curva], [d["forca_corrigida_gf"] for d in curva],
+                   yerr=[d["desvio_gf"] for d in curva], fmt="o-", color="#08519c", capsize=4, label="média ± desvio")
+    if curva is not degraus:
+        baixo.plot(0, degraus[-1]["forca_corrigida_gf"], "x", color="#e6550d", markersize=10,
+                   label=f"zero no fim (deriva {degraus[-1]['forca_corrigida_gf']:+.1f} gf)")
+    baixo.legend(loc="upper left")
+    for d in degraus:
+        if d["throttle_pct"] > 0:
+            baixo.annotate(f"{d['forca_corrigida_gf']:.0f} gf", (d["throttle_pct"], d["forca_corrigida_gf"]),
+                           textcoords="offset points", xytext=(-8, 8), ha="right", fontsize=9)
+    baixo.set_xlabel("throttle (%)")
+    baixo.set_ylabel("força (gf)")
+    baixo.grid(True, alpha=0.3)
 
-        wanted = max(0.0, PROFILE(t))
-        sent = to_motor(wanted)
-        confirmed = motor(port, sent)
-        if confirmed is None:
-            print("The Nano refused the command (bench locked?): stopping.")
-            break
-        rows.append((t, wanted, sent, confirmed))
-
-        live.set_data([r[0] for r in rows], [to_relative(r[3]) for r in rows])
-        ax.set_title(f"t = {t:4.1f} s    throttle = {to_relative(confirmed):.0f} %  ({confirmed} % real)")
-
-        next_send += SEND_PERIOD
-        plt.pause(max(0.001, next_send - time.monotonic()))   # redraws AND waits for the next tick
-    return rows
+    fig.tight_layout()
+    caminho = os.path.join(PASTA, f"{nome}.png")
+    fig.savefig(caminho, dpi=120)
+    plt.close(fig)
+    return caminho
 
 
 def main():
-    print(f"Ensaio '{PROFILE.__name__}': {DURATION:g} s"
-          f" (100 % = {MOTOR_MAX_PERCENT} % real throttle).")
-    print("!!! The motor WILL TURN. !!!")
-    if input("Motor bem preso e ninguém perto da hélice? Escreve SIM para continuar: ").strip() != "SIM":
-        print("Cancelled.")
+    tc.titulo("Ensaio com a hélice", f"degraus {DEGRAUS} %  ·  {ESTABILIZAR_S} s a estabilizar + {MEDIR_S} s a medir")
+    if not tm.confirmar("O MOTOR VAI RODAR COM A HÉLICE.",
+                        "Motor bem preso e ninguém à frente nem ao lado da hélice?"):
+        print("  Cancelado.")
         return 2
 
+    nano = tc.ligar()
+    if nano is None:
+        return 2
+    degraus, leituras = [], []
     try:
-        port = serial.Serial(tc.PORT, tc.BAUD, timeout=0.05)
-    except serial.SerialException as e:
-        print(f"Could not open {tc.PORT}: {e}")
-        print("Is the monitor (or the server) open? Close it and try again.")
-        return 2
-
-    print(f"Port {tc.PORT} open. Waiting for READY...")
-    if not tc.wait_ready(port):
-        print("ERROR: the Nano did not say READY")
-        return 2
-
-    # The Nano locks if it hears nothing for 1 s: the heartbeat covers the waits
-    # (unlock, countdown). During the profile the MOTOR commands already count.
-    tc.start_heartbeat(port)
-    rows = []
-    try:
-        # known, safe state, in SERVER mode (the mode only changes while LOCKED)
-        tm.reply(port, "STOP")
-        if tm.reply(port, "MODE SERVER") != "OK MODE SERVER":
+        pronta, ha_celula = tm.mostrar_estado(nano)
+        if not ha_celula:
+            print(vermelho("    O ensaio precisa da célula de carga."))
+        if not pronta or not ha_celula:
             return 1
-        bat = tm.reply(port, "BAT")
-        if not re.fullmatch(r"OK BAT (GOOD|WEAK) .*", bat):
-            print("Connect a charged battery to the ESC and try again.")
-            return 1
-        # The plot window is opened BEFORE unlocking: over X11 (MobaXterm) creating it can freeze
-        # Python (heartbeat included) for more than 1 s. With the bench still LOCKED that is harmless.
-        fig, ax, live = setup_plot()
-        ax.set_title("à espera do desbloqueio...")
-        plt.pause(0.1)
-        if not tm.unlock(port):
-            print("Bench not unlocked.")
+        if not tm.desbloquear(nano):
             return 1
 
-        for i in range(COUNTDOWN_S, 0, -1):
-            print(f"  starting in {i}...")
-            ax.set_title(f"começa em {i}...")
-            plt.pause(1)
-        rows = run_profile(port, fig, ax, live)
+        tc.seccao("Ensaio")
+        t0 = time.monotonic()
+        for percent in DEGRAUS:
+            d = medir_degrau(nano, percent, t0, leituras)
+            degraus.append(d)
+            desvio = tenue(f"±{d['desvio_gf']:.1f}")
+            tm.fim_linha_viva(f"    {tm.barra(percent)} {percent:3d} %   {d['forca_gf']:7.1f} gf  {desvio}   {d['bateria_V']:5.2f} V")
+        nano.set_motor(0)
+        tc.registar("ensaio completo", True, f"{len(DEGRAUS)} degraus, {len(leituras)} leituras")
     except KeyboardInterrupt:
-        print("\nInterrupted.")
+        print(amarelo("\n  Interrompido: grava o que já foi medido."))
+    except NanoError as e:
+        print(vermelho(f"\n  O Nano recusou ({e}): o banco bloqueou? Grava o que já foi medido."))
+        tc.registar("ensaio completo", False, "-", str(e))
     finally:
-        # ALWAYS leave the motor stopped and the bench locked
-        tc.write(port, "MOTOR 0\nSTOP\n")
-        time.sleep(0.2)
-        tc.stop_heartbeat()
-        port.close()
-        print("STOP sent: motor at 0 %, bench locked.")
-        print(f"Longest silence towards the Nano: {tc.longest_silence():.2f} s (it locks at 1 s).")
+        nano.close()                   # STOP + fechar: motor a 0 e banco bloqueado, aconteça o que acontecer
+        print(tenue("  STOP enviado: motor a 0 %, banco bloqueado."))
 
-    if rows:
-        peak = max(r[3] for r in rows)
-        print(f"{len(rows)} points in {rows[-1][0]:.1f} s, peak {to_relative(peak):.0f} % ({peak} % real).")
-        print("Close the plot window to exit.")
-        plt.ioff()
-        plt.show(block=True)
-    return 0
+    if degraus:
+        zero = degraus[0]["forca_gf"] if degraus[0]["throttle_pct"] == 0 else 0.0
+        for d in degraus:
+            d["forca_corrigida_gf"] = round(d["forca_gf"] - zero, 1)
+            d["forca_corrigida_N"] = round(d["forca_corrigida_gf"] * 0.00980665, 3)
+        mostrar_curva([d for d in degraus if d["throttle_pct"] > 0], zero)
+        if len(degraus) == len(DEGRAUS) and DEGRAUS[-1] == 0:
+            deriva = degraus[-1]["forca_gf"] - zero
+            ok = abs(deriva) < 10
+            tc.registar("deriva do zero", ok, f"{deriva:+.1f} gf",
+                        "" if ok else "o zero mudou muito: a célula aqueceu ou a montagem cedeu?")
+        tc.seccao("Ficheiros")
+        os.makedirs(PASTA, exist_ok=True)
+        nome = time.strftime("%Y-%m-%d_%H%M%S")
+        ficheiros = gravar(nome, degraus, leituras)
+        if leituras:
+            ficheiros.append(grafico(nome, degraus, leituras, zero))
+        for caminho in ficheiros:
+            print(f"    {os.path.relpath(caminho, tc.ROOT)}")
+    return tc.resumo()
 
 
 if __name__ == "__main__":

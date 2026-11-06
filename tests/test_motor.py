@@ -1,264 +1,204 @@
 #!/usr/bin/env python3
-# Interactive MOTOR test: the motor WILL TURN.
+# Teste do motor EM VAZIO: o motor VAI RODAR.
 #
-#   !!! ONLY WITHOUT THE PROPELLER, with the motor firmly fixed !!!
+#   !!! SEM A HÉLICE, com o motor bem preso !!!
 #
-# Needs you at the bench: you hold the button to unlock, tap it to lock, and confirm
-# what you see. The automatic suite (test_commands.py) never turns the motor; this one does,
-# so it is a separate script you only run on purpose.
+# 1. mostra o estado da bancada (bateria, ESC, sensores)
+# 2. confirma que, bloqueado, o MOTOR é recusado
+# 3. desbloqueia (você segura o botão 2 s)
+# 4. sobe e desce o throttle por degraus, a mostrar a bateria e a célula em tempo real
+# 5. com o motor a rodar e a célula a ser lida em contínuo, você dá UM toque no botão: tem de bloquear
 #
-# The Nano locks the bench if it hears nothing for 1 s (heartbeat). While this script waits for
-# you (questions, button), a background thread keeps sending PING (tc.start_heartbeat).
-# It ALWAYS sends STOP at the end, even if a test fails or you press Ctrl+C.
-# If anything looks wrong, tap the button (it always locks).
+# Se algo parecer errado: um toque no botão bloqueia sempre, ou Ctrl+C (o script envia STOP).
 #
-# Run (with the monitor CLOSED):
+# Correr (com a dashboard e o monitor FECHADOS):
 #   python3 tests/test_motor.py
-#   python3 tests/test_motor.py /dev/ttyUSB1      (another port)
+#   python3 tests/test_motor.py /dev/ttyUSB1      (outra porta)
 
-import os
-import re
+import statistics
 import sys
 import time
 
-import serial
+import test_commands as tc            # cores, títulos, ligar(), registar(), resumo()
+from communication import NanoError
+from test_commands import negrito, tenue, verde, vermelho, amarelo, ciano
 
-# works both as "python3 tests/test_motor.py" and "python3 -m tests.test_motor"
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-import tests.test_commands as tc     # reuses wait_ready(), send(), read_line(), the heartbeat and the EVT list
-
-PORT = tc.PORT
-BAUD = tc.BAUD
-UNLOCK_WAIT_S = 30             # same as UNLOCK_WAIT_MS on the Nano
-UNLOCK_HOLD_S = 2              # same as UNLOCK_HOLD_MS on the Nano
-READY_WAIT_S = 20              # waits for ESC_ARMING (3 s after a reset) and for you to zero the pot
-TAP_WAIT_S = 15                # time to tap the button when asked
-SERVER_SILENT_S = 1.5          # > SERVER_TIMEOUT_MS on the Nano (1 s): long enough to lock
-SLOW = 8                       # % - slow (1080 us, the start pulse of esc_controller)
-FAST = 15                      # % - a bit faster (1150 us)
-
-results = []                   # (test name, passed)
+MOTOR_MAX = 50                         # o MOTOR_MAX_PERCENT do pins.h: o Nano nunca passa disto
+DEGRAUS = [10, 20, 30, 40, 50, 30, 10] # % de throttle, por esta ordem
+DEGRAU_S = 3                           # s em cada degrau
+TOQUE = 15                             # % com que o motor roda durante o teste do toque
+TOQUE_ESPERA_S = 15                    # s para dar o toque
 
 
-def check(name, ok, detail=""):
-    results.append((name, ok))
-    print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f"  ({detail})" if detail else ""))
+# ---------------------------------------------------------------------------
+# Peças usadas também pelo test_ensaio
+# ---------------------------------------------------------------------------
+
+def barra(percent, maximo=MOTOR_MAX, largura=20):
+    cheio = round(largura * min(max(percent, 0), maximo) / maximo)
+    return ciano("█" * cheio) + tenue("░" * (largura - cheio))
+
+
+def linha_viva(texto):
+    """Reescreve a mesma linha do terminal (um mostrador em tempo real)."""
+    if tc.COR:
+        print("\r" + texto + "\033[K", end="", flush=True)
+
+
+def fim_linha_viva(texto):
+    if tc.COR:
+        print("\r" + texto + "\033[K")
+    else:
+        print(texto)
+
+
+def perguntar(pergunta):
+    resposta = input(f"  {amarelo('?')} {pergunta} [s/n] ").strip().lower()
+    return resposta in ("s", "sim", "y", "yes")
+
+
+def confirmar(aviso, pergunta):
+    print("\n  " + vermelho(negrito(f"⚠  {aviso}")))
+    return input(f"  {pergunta} Escreva SIM para continuar: ").strip() == "SIM"
+
+
+def mostrar_estado(nano):
+    """Mostra o estado da bancada. Devolve (bateria pronta?, há célula?)."""
+    tc.seccao("Estado da bancada")
+    bat = nano.battery_status()
+    nano.esc_armed.wait(5)             # depois do reset, o ESC demora 3 s a armar
+    esc = nano.esc_state()
+    ar = nano.air_readings()
+    forca = nano.thrust_readings()
+    cor_bat = verde if bat["state"] == "GOOD" else (amarelo if bat["state"] == "WEAK" else vermelho)
+    print(f"    bateria   {cor_bat(bat['state']):<6}  {bat['voltage']:.2f} V")
+    print(f"    ESC       {(verde if esc == 'ARMED' else amarelo)(esc)}")
+    print(f"    banco     {nano.bench_state()['state']}   modo {nano.mode()}")
+    print(f"    ar        " + (f"{ar['temperature']:.1f} °C  {ar['pressure']:.1f} hPa  {ar['density']:.4f} kg/m³"
+                                if ar else amarelo("sem sensor")))
+    print(f"    célula    " + (f"{forca['gf']:.0f} gf (deve estar perto de 0)" if forca else amarelo("sem sensor")))
+    pronta = bat["state"] in ("GOOD", "WEAK") and esc == "ARMED"
+    if not pronta:
+        print(vermelho("    Ligue uma bateria carregada ao ESC e tente outra vez."))
+    return pronta, forca is not None
+
+
+def desbloquear(nano):
+    """UNLOCK + você segura o botão 2 s. Devolve True quando o banco está UNLOCKED."""
+    tc.seccao("Desbloquear")
+    try:
+        nano.bench_unlock()
+    except NanoError as e:
+        tc.registar("UNLOCK", False, "-", str(e))
+        return False
+    print(f"    {negrito('Segure o botão 2 s')} (o LED vermelho pisca depressa, depois um apito longo)...")
+    ok = nano.wait_unlocked()
+    tc.registar("UNLOCK + botão 2 s", ok, nano.bench["state"] if nano.bench else "-")
     return ok
 
 
-def ask(question):
-    """Asks you to confirm what you see at the bench. Returns True for 's'/'y'."""
-    answer = input(f"  >>> {question} [s/n] ").strip().lower()
-    return answer in ("s", "sim", "y", "yes")
+# ---------------------------------------------------------------------------
+
+def rodar(nano, percent, segundos, ha_celula):
+    """Põe o motor a 'percent' durante 'segundos', com um mostrador em tempo real. Devolve (volts, gf)."""
+    nano.set_motor(percent)
+    volts, gfs = [], []
+    fim = time.monotonic() + segundos
+    while (resta := fim - time.monotonic()) > 0:
+        if ha_celula:
+            gfs.append(nano.thrust_readings()["gf"])   # espera pela leitura seguinte (~100 ms)
+        else:
+            time.sleep(0.1)
+        volts.append(nano.battery_status()["voltage"])
+        forca = f"{gfs[-1]:7.0f} gf" if gfs else tenue("   — gf")
+        linha_viva(f"    {barra(percent)} {percent:3d} %   {volts[-1]:5.2f} V   {forca}   {tenue(f'{resta:3.1f} s')}")
+    return volts, gfs
 
 
-def reply(port, command):
-    """Sends a command and returns its ONE reply line (or '' if none / too many)."""
-    replies, _ = tc.send(port, command)
-    if len(replies) != 1:
-        print(f"      {command!r} -> {replies}  (expected exactly one line)")
-        return ""
-    print(f"      {command!r} -> {replies[0]}")
-    return replies[0]
+def testar_degraus(nano, ha_celula):
+    tc.seccao(f"Degraus · {DEGRAU_S} s em cada um")
+    linhas = []
+    for percent in DEGRAUS:
+        volts, gfs = rodar(nano, percent, DEGRAU_S, ha_celula)
+        v = statistics.mean(volts)
+        if gfs:
+            ruido = statistics.pstdev(gfs)
+            forca = f"{statistics.mean(gfs):6.0f} gf  ±{ruido:4.0f}"
+        else:
+            forca = tenue("sem célula")
+        fim_linha_viva(f"    {barra(percent)} {percent:3d} %   {v:5.2f} V   {forca}")
+        linhas.append((percent, v))
+    nano.set_motor(0)
+
+    queda = linhas[0][1] - min(v for _, v in linhas)
+    print(tenue(f"    a tensão caiu até {queda:.2f} V com o motor a rodar"))
+    print(tenue("    em vazio a força deve ficar perto de 0: o ± é o ruído (vibração)"))
+    tc.registar("degraus sem erros", True, f"{len(DEGRAUS)} degraus")
+    tc.registar("o motor rodou suave", perguntar("O motor acompanhou os degraus, sem ruídos estranhos?"), "")
 
 
-def wait_bench(port, pattern, seconds):
-    """Asks BENCH every 200 ms until the reply matches 'pattern' (regex) or time runs out."""
-    deadline = time.monotonic() + seconds
-    line = ""
-    while time.monotonic() < deadline:
-        replies, _ = tc.send(port, "BENCH")
-        line = replies[0] if replies else ""
-        if re.fullmatch(pattern, line):
-            return line
-        time.sleep(0.2)
-    return line
-
-
-def wait_motor(port, test, seconds):
-    """Asks MOTOR every 200 ms until test(percent) is True or time runs out. Returns the last %."""
-    deadline = time.monotonic() + seconds
-    percent = -1
-    while time.monotonic() < deadline:
-        replies, _ = tc.send(port, "MOTOR")
-        m = re.fullmatch(r"OK MOTOR (\d+)", replies[0]) if replies else None
-        if m:
-            percent = int(m.group(1))
-            if test(percent):
-                return percent
-        time.sleep(0.2)
-    return percent
-
-
-def request_unlock(port):
-    """Sends UNLOCK until it is accepted. Returns True when the bench is UNLOCKING."""
-    # Two problems fix themselves (or with your hand), so the script waits for them:
-    #   ESC_ARMING   -> opening the port resets the Nano, which then waits 3 s for the ESC
-    #   POT_NOT_ZERO -> you put the pot back to zero
-    # Anything else (no battery, low voltage) stops the test at once.
-    deadline = time.monotonic() + READY_WAIT_S
-    asked_pot = False
-    r = reply(port, "UNLOCK")
-    while time.monotonic() < deadline:
-        m = re.fullmatch(r"ERROR UNLOCK not ready:((?: \w+)+)", r)
-        problems = set(m.group(1).split()) if m else set()
-        if not problems or not problems <= {"ESC_ARMING", "POT_NOT_ZERO"}:
-            break                                       # unlocked, or a problem we cannot wait for
-        if "POT_NOT_ZERO" in problems and not asked_pot:
-            print("  >>> Put the pot back to ZERO.")
-            asked_pot = True
-        time.sleep(0.5)
-        r = reply(port, "UNLOCK")
-    if not r.startswith("OK UNLOCK"):
-        print("      The bench is not ready to unlock (see what is missing above).")
-        return False
-    return True
-
-
-def unlock(port):
-    """UNLOCK + you hold the button 2 s. Returns True when the bench is UNLOCKED."""
-    if not request_unlock(port):
-        return False
-    print(f"  >>> HOLD THE BUTTON for 2 s (red LED blinking fast, then long beep). You have {UNLOCK_WAIT_S} s.")
-    line = wait_bench(port, r"OK BENCH UNLOCKED", UNLOCK_WAIT_S + 2)
-    return line == "OK BENCH UNLOCKED"
-
-
-def run(port):
-    # --- 0) start from a known, safe state, in SERVER mode (already the startup mode) ---
-    reply(port, "STOP")
-    check("MODE SERVER", reply(port, "MODE SERVER") == "OK MODE SERVER")
-    check("starts LOCKED", reply(port, "BENCH").startswith("OK BENCH LOCKED"))
-    check("motor at 0", reply(port, "MOTOR") == "OK MOTOR 0")
-    bat = reply(port, "BAT")
-    if not check("battery GOOD or WEAK", bool(re.fullmatch(r"OK BAT (GOOD|WEAK) .*", bat)), bat):
-        print("Connect a charged battery to the ESC and try again.")
-        return
-
-    # --- 1) locked: MOTOR must be refused ---
-    check("locked: MOTOR refused", reply(port, f"MOTOR {FAST}").startswith("ERROR MOTOR bench LOCKED"))
-    check("locked: motor still 0", reply(port, "MOTOR") == "OK MOTOR 0")
-
-    # --- 1b) a button ALREADY held when UNLOCK arrives must NOT unlock (stuck button) ---
-    print("  >>> PRESS AND HOLD the button now (keep holding), then press Enter.")
-    input("      (holding?) ")
-    check("UNLOCK with the button already held", request_unlock(port))
-    time.sleep(UNLOCK_HOLD_S + 1.5)
-    check("held before UNLOCK: does NOT unlock", reply(port, "BENCH") == "OK BENCH UNLOCKING")
-    print("  >>> RELEASE the button.")
-    time.sleep(2)
-    reply(port, "STOP")
-
-    # --- 2) unlock with the button ---
-    if not check("UNLOCK + button 2 s -> UNLOCKED", unlock(port)):
-        return
-
-    # --- 3) turn slowly, faster, stop ---
-    tc.events.clear()
-    check(f"MOTOR {SLOW}", reply(port, f"MOTOR {SLOW}") == f"OK MOTOR {SLOW}")
-    check("motor turns slowly", ask("O motor está a rodar devagar?"))
-    check(f"MOTOR {FAST}", reply(port, f"MOTOR {FAST}") == f"OK MOTOR {FAST}")
-    check("motor turns faster", ask("Está a rodar mais depressa?"))
-    pot_events = [e for e in tc.events if e.startswith("EVT POT")]
-    check("no EVT POT while the motor turns (pot untouched)", not pot_events,
-          f"{len(pot_events)} events: {pot_events[:5]}" if pot_events else "")
-    check("MOTOR 0", reply(port, "MOTOR 0") == "OK MOTOR 0")
-    check("motor stopped", ask("O motor parou?"))
-    check("still UNLOCKED after MOTOR 0", reply(port, "BENCH") == "OK BENCH UNLOCKED")
-
-    # --- 4) a tap on the button stops the motor and locks ---
-    check(f"MOTOR {FAST} again", reply(port, f"MOTOR {FAST}") == f"OK MOTOR {FAST}")
-    print(f"  >>> Now give ONE TAP on the button (short beep). You have {TAP_WAIT_S} s.")
-    line = wait_bench(port, r"OK BENCH LOCKED.*", TAP_WAIT_S)
-    check("tap -> LOCKED BUTTON", line == "OK BENCH LOCKED BUTTON", line)
-    check("tap -> motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
-    check("motor stopped after the tap", ask("O motor parou com o toque?"))
-
-    # --- 5) STOP stops the motor and locks ---
-    if not check("unlock again", unlock(port)):
-        return
-    check(f"MOTOR {FAST} (for STOP)", reply(port, f"MOTOR {FAST}") == f"OK MOTOR {FAST}")
-    time.sleep(1)
-    check("STOP", reply(port, "STOP") == "OK STOP")
-    check("STOP -> LOCKED STOP", reply(port, "BENCH") == "OK BENCH LOCKED STOP")
-    check("STOP -> motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
-    check("motor stopped after STOP", ask("O motor parou com o STOP?"))
-
-    # --- 5b) the server goes silent (heartbeat stops) with the motor turning: must lock ---
-    if not check("unlock again (heartbeat)", unlock(port)):
-        return
-    check(f"MOTOR {FAST} (for the heartbeat)", reply(port, f"MOTOR {FAST}") == f"OK MOTOR {FAST}")
-    print(f"  >>> The script goes SILENT for {SERVER_SILENT_S} s: the motor must stop (high beep).")
-    tc.stop_heartbeat()
-    time.sleep(SERVER_SILENT_S)
-    tc.start_heartbeat(port)
-    check("silent -> LOCKED SERVER_LOST", reply(port, "BENCH") == "OK BENCH LOCKED SERVER_LOST")
-    check("silent -> motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
-    check("motor stopped when the server went silent", ask("O motor parou (e ouviu um apito agudo)?"))
-
-    # --- 6) locked again: refused ---
-    check("locked: MOTOR refused again", reply(port, f"MOTOR {FAST}").startswith("ERROR MOTOR bench LOCKED"))
-
-    # --- 7) POT mode: the pot is the throttle ---
-    print("\n  --- POT mode ---")
-    check("MODE POT", reply(port, "MODE POT") == "OK MODE POT")
-    print("  >>> Make sure the pot is at ZERO.")
-    if not check("unlock in POT mode", unlock(port)):
-        return
-    check("unlocked: MODE refused", reply(port, "MODE SERVER").startswith("ERROR MODE bench UNLOCKED"))
-    check("POT mode: MOTOR <n> refused", reply(port, f"MOTOR {FAST}") == "ERROR MOTOR mode POT")
-    check("pot at zero: motor 0", reply(port, "MOTOR") == "OK MOTOR 0")
-    print("  >>> Turn the pot SLOWLY until the motor turns (a little, not to the end). You have 15 s.")
-    p = wait_motor(port, lambda x: x > 0, 15)
-    check("pot moves the motor", p > 0, f"{p} %")
-    check("motor turns with the pot", ask("O motor roda e acompanha o pot?"))
-    print("  >>> Turn the pot back to ZERO. You have 15 s.")
-    p = wait_motor(port, lambda x: x == 0, 15)
-    check("pot at zero: motor 0 again", p == 0, f"{p} %")
-    print(f"  >>> Now give ONE TAP on the button. You have {TAP_WAIT_S} s.")
-    line = wait_bench(port, r"OK BENCH LOCKED.*", TAP_WAIT_S)
-    check("POT mode: tap -> LOCKED BUTTON", line == "OK BENCH LOCKED BUTTON", line)
+def testar_toque(nano, ha_celula):
+    """O toque no botão tem de bloquear MESMO com a célula a ser lida em contínuo (o loop do Nano
+    passa a maior parte do tempo à espera da leitura seguinte)."""
+    tc.seccao("Toque no botão com o motor a rodar")
+    nano.set_motor(TOQUE)
+    print(f"    Motor a {TOQUE} %. {negrito('Dê UM toque curto no botão.')} "
+          + tenue(f"(a célula está a ser lida em contínuo; tem {TOQUE_ESPERA_S} s)"))
+    inicio = time.monotonic()
+    pedidos = 0
+    while time.monotonic() - inicio < TOQUE_ESPERA_S:
+        if nano.bench and nano.bench["state"] == "LOCKED":
+            break
+        if ha_celula:
+            nano.thrust_readings()
+            pedidos += 1
+        else:
+            time.sleep(0.05)
+        linha_viva(tenue(f"    à espera do toque... {time.monotonic() - inicio:4.1f} s   ({pedidos} THRUST)"))
+    fim_linha_viva("")
+    bloqueou = nano.bench is not None and nano.bench["state"] == "LOCKED"
+    motivo = " ".join(filter(None, [nano.bench["state"], nano.bench["reason"]])) if nano.bench else "-"
+    tc.registar("toque → LOCKED BUTTON", bloqueou and nano.bench["reason"] == "BUTTON", motivo,
+                "" if bloqueou else "o toque não foi visto: o Nano estava parado à espera da célula?")
+    tc.registar("toque → motor a 0", nano.motor() == 0, f"MOTOR {nano.motor()}")
+    if bloqueou:
+        tc.registar("o motor parou", perguntar("O motor parou com o toque?"), "")
 
 
 def main():
-    print(__doc__ if __doc__ else "")
-    print("!!! This test TURNS THE MOTOR. Remove the propeller and fix the motor firmly. !!!")
-    if input("Hélice retirada e motor bem preso? Escreve SIM para continuar: ").strip() != "SIM":
-        print("Cancelled.")
+    tc.titulo("Teste do motor em vazio", "o motor VAI RODAR · sem hélice")
+    if not confirmar("O MOTOR VAI RODAR.", "Hélice retirada e motor bem preso?"):
+        print("  Cancelado.")
         return 2
 
+    nano = tc.ligar()
+    if nano is None:
+        return 2
     try:
-        port = serial.Serial(PORT, BAUD, timeout=0.05)
-    except serial.SerialException as e:
-        print(f"Could not open {PORT}: {e}")
-        print("Is the monitor (or the server) open? Close it and try again.")
-        return 2
+        pronta, ha_celula = mostrar_estado(nano)
+        if not pronta:
+            return 1
 
-    print(f"Port {PORT} open. Waiting for READY...")
-    if not tc.wait_ready(port):
-        print("ERROR: the Nano did not say READY")
-        return 2
-    print("Nano READY.\n")
+        tc.seccao("Bloqueado: o motor não pode rodar")
+        nano.stop()
+        try:
+            nano.set_motor(TOQUE)
+            tc.registar(f"MOTOR {TOQUE} bloqueado", False, "aceite!", "o banco bloqueado aceitou o MOTOR")
+        except NanoError as e:
+            tc.registar(f"MOTOR {TOQUE} bloqueado", True, "recusado")
 
-    tc.start_heartbeat(port)
-    try:
-        run(port)
+        if desbloquear(nano):
+            testar_degraus(nano, ha_celula)
+            testar_toque(nano, ha_celula)
     except KeyboardInterrupt:
-        print("\nInterrupted.")
+        print(amarelo("\n  Interrompido."))
+    except NanoError as e:
+        print(vermelho(f"\n  O Nano recusou: {e}"))
+        tc.registar("sem erros do Nano", False, "-", str(e))
     finally:
-        # ALWAYS leave the motor stopped and the bench locked
-        tc.write(port, "STOP\n")
-        time.sleep(0.2)
-        tc.stop_heartbeat()
-        port.close()
-        print("STOP sent: motor at 0 %, bench locked.")
-
-    failed = [name for name, ok in results if not ok]
-    print(f"\n{len(results) - len(failed)}/{len(results)} checks passed.")
-    if failed:
-        print("Failed: " + ", ".join(failed))
-    return 1 if failed else 0
+        nano.close()                   # STOP + fechar: motor a 0 e banco bloqueado, aconteça o que acontecer
+        print(tenue("  STOP enviado: motor a 0 %, banco bloqueado."))
+    return tc.resumo()
 
 
 if __name__ == "__main__":

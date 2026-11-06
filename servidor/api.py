@@ -21,6 +21,10 @@ connect_lock = threading.Lock()   # só uma tentativa de ligação de cada vez
 last_status = time.monotonic()
 running = True
 
+thrust_points = []
+thrust_recording = False
+thrust_start = 0.0
+thrust_lock = threading.Lock()
 
 # Vigia do cliente: é o heartbeat de novo, um andar acima. O Pi continua a enviar PING ao Nano,
 # por isso se o browser desaparecer com o motor a rodar, quem tem de mandar STOP é o servidor.
@@ -33,6 +37,43 @@ def client_watchdog():
                 nano.stop()
             except (NanoError, TimeoutError) as e:
                 print("AVISO: o STOP falhou:", e)
+
+# Gravação do thrust (para o gráfico): enquanto thrust_recording estiver ligado, pede a força e o throttle
+# ao Nano em contínuo e junta um ponto à thrust_points. O ritmo é o da HX711 (~10/s): cada THRUST espera
+# pela leitura seguinte, por isso não precisa de sleep. Se algo falhar, desliga a gravação (e avisa).
+def thrust_loop():
+    global thrust_recording
+    while running:
+        n = nano                            # cópia: o CONNECT pode trocar (ou largar) o nano a meio da volta
+        if not thrust_recording or n is None:
+            time.sleep(0.05)                # nada a fazer: sem isto o ciclo punha o processador a 100 %
+            continue
+
+        try:
+            with n.quiet():                 # pedidos de fundo: não enchem a página Serial
+                thrust = n.thrust_readings()
+                throttle = n.motor()
+        except (NanoError, TimeoutError) as e:
+            print("AVISO: a leitura do thrust falhou, a gravação parou:", e)
+            thrust_recording = False
+            continue
+        except (serial.SerialException, OSError):
+            print("AVISO: a porta do Nano morreu (o USB caiu?), a gravação parou")
+            thrust_recording = False
+            continue
+
+        if thrust is None:                  # não há célula de carga
+            print("AVISO: sem célula de carga, a gravação parou")
+            thrust_recording = False
+            continue
+
+        with thrust_lock:                   # a rota GET /thrust lê a mesma lista noutra thread
+            thrust_points.append({
+                "n": len(thrust_points) + 1,                        # 1, 2, 3... (recomeça em cada start)
+                "t": round(time.monotonic() - thrust_start, 3),     # s desde o start, medidos aqui
+                "gf": thrust["gf"],
+                "throttle": throttle,                               # % do MOTOR nesse momento
+            })
 
 
 # Larga o Nano atual (se houver), fechando-o sem rebentar mesmo que a porta já tenha morrido
@@ -73,6 +114,7 @@ async def lifespan(app):
     global running
     connect()
     threading.Thread(target=client_watchdog, daemon=True).start()
+    threading.Thread(target=thrust_loop, daemon=True).start()
     yield
     running = False
     if nano is not None:
@@ -137,6 +179,7 @@ def status():
             "battery": call("battery_status"),
             "pot": call("pot_reading"),
             "air": call("air_readings"),
+            "thrust_offset": call("thrust_offset"),
         }
 
 
@@ -223,3 +266,50 @@ def set_mode(req: ModeRequest):
 @app.post("/motor")
 def set_motor(req: MotorRequest):
     return {"motor": call("set_motor", req.percent)}
+
+@app.post("/tare")
+def tare():
+    return {"offset": call("tare_thrust_sensor")}
+
+
+# ----- Thrust (o gráfico e os ensaios) -----
+
+# Liga a gravação: limpa os pontos e o tempo volta ao zero. A thread thrust_loop começa a juntar pontos.
+@app.post("/thrust/start")
+def thrust_start_recording():
+    global thrust_recording, thrust_start
+    if nano is None:
+        call("thrust_readings")               # sem Nano: o call() responde 503
+    with thrust_lock:
+        thrust_points.clear()                 # ANTES de ligar: senão a thread ainda juntava um ponto à lista antiga
+    thrust_start = time.monotonic()
+    thrust_recording = True
+    return {"recording": True}
+
+
+# Desliga a gravação. Os pontos ficam na lista (o GET /thrust continua a dá-los) até ao próximo start.
+@app.post("/thrust/stop")
+def thrust_stop_recording():
+    global thrust_recording
+    thrust_recording = False
+    return {"recording": False}
+
+
+# A força NESTE momento (para os ensaios): {"gf": 205.0, ...}, ou null se não há célula.
+# A gravar: o último ponto da thread (lido há menos de ~100 ms), sem pedir nada ao Nano: dois a pedir THRUST
+# dividiam as 10 leituras por segundo entre si. Sem gravar: pergunta ao Nano agora.
+@app.get("/thrust/now")
+def thrust_now():
+    with thrust_lock:
+        if thrust_recording and thrust_points:
+            return thrust_points[-1]
+    return call("thrust_readings")
+
+
+# Os pontos gravados depois do número 'after' (o gráfico pede só os novos), e se ainda está a gravar
+# (false = parado com o STOP, ou parou sozinho: célula a falhar, porta a morrer...).
+@app.get("/thrust")
+def thrust(after: int = 0):
+    with thrust_lock:
+        points = [p for p in thrust_points if p["n"] > after]
+    return {"points": points, "recording": thrust_recording}

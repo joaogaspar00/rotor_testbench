@@ -14,6 +14,18 @@ async function refresh() {
         document.getElementById("motor").textContent = s.motor + " %";
         document.getElementById("battery").textContent = s.battery.state + "  " + s.battery.voltage.toFixed(2) + " V";
         document.getElementById("pot").textContent = s.pot;
+
+        if (s.air === null) {
+            // Se o sensor de ar não estiver presente, mostra "no sensor" em vez de valores
+            document.getElementById("air-density").textContent = "no sensor";
+            document.getElementById("air-temperature").textContent = "no sensor";
+            document.getElementById("air-pressure").textContent = "no sensor";
+        } else {
+            document.getElementById("air-density").textContent = s.air.density.toFixed(4) + " kg/m³";
+            document.getElementById("air-temperature").textContent = s.air.temperature.toFixed(1) + " °C";
+            document.getElementById("air-pressure").textContent = s.air.pressure.toFixed(1) + " hPa";
+        }
+
     } catch (e) {
         show("no answer from the server", false);
     }

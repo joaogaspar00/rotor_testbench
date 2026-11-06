@@ -136,6 +136,7 @@ def status():
             "motor": call("motor"),
             "battery": call("battery_status"),
             "pot": call("pot_reading"),
+            "air": call("air_readings"),
         }
 
 

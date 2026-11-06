@@ -244,6 +244,43 @@ class Nano:
 
         raise NanoError(f"Unexpected response for BAT command: {answer}")
 
+    # Propriedades do ar (BMP280), medidas agora:
+    #   OK AIR 23.55C 997.98hPa 1.1718kg/m3 -> {"temperature": 23.55, "pressure": 997.98, "density": 1.1718}
+    # None se não há sensor (ERROR AIR no sensor): o banco pode trabalhar sem ele.
+    def air_readings(self):
+        try:
+            answer = self._command("AIR")
+        except NanoError as e:
+            if "no sensor" in str(e):
+                return None                                     # não há sensor: não é uma avaria
+            raise                                               # outro erro: volta a levantá-lo, igual
+
+        if answer.startswith("OK AIR"):
+            parts = answer.split()
+            air_temp = float(parts[2].removesuffix("C"))        # temperatura em °C
+            air_pressure = float(parts[3].removesuffix("hPa"))  # pressão em hPa
+            air_density = float(parts[4].removesuffix("kg/m3")) # densidade em kg/m3
+            return {"temperature": air_temp, "pressure": air_pressure, "density": air_density}
+        raise NanoError(f"Unexpected response for AIR command: {answer}")
+
+    # Força da célula de carga (HX711): espera pela próxima leitura (até ~100 ms a 10/s), nunca repete uma.
+    #   OK THRUST 799gf 7.84N -> {"gf": 799.0, "newtons": 7.84}
+    # None se não há célula (ERROR THRUST no sensor); NanoError se a célula deixou de responder (ERROR THRUST timeout).
+    def thrust_readings(self):
+        try:
+            answer = self._command("THRUST")
+        except NanoError as e:
+            if "no sensor" in str(e):
+                return None                                     # não há célula: não é uma avaria
+            raise                                               # timeout ou outro erro: volta a levantá-lo, igual
+
+        if answer.startswith("OK THRUST"):
+            parts = answer.split()
+            thrust_gf = float(parts[2].removesuffix("gf"))      # força em gramas-força
+            thrust_newtons = float(parts[3].removesuffix("N"))  # força em newtons
+            return {"gf": thrust_gf, "newtons": thrust_newtons}
+        raise NanoError(f"Unexpected response for THRUST command: {answer}")
+
     # Estado do ESC, perguntado agora: "NONE" (sem bateria), "ARMING" (a armar) ou "ARMED". OK ESC ARMED -> "ARMED"
     # (Também chega sozinho por evento, em self.esc, sempre que muda.)
     def esc_state(self):

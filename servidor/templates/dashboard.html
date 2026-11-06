@@ -15,6 +15,8 @@
                 <tr><th>Motor</th>   <td id="motor">-</td></tr>
                 <tr><th>Battery</th> <td id="battery">-</td></tr>
                 <tr><th>Pot</th>     <td id="pot">-</td></tr>
+                <tr><th>Tare</th>    <td id="thrust-offset">-</td></tr>
+
             </table>
 
             <h2>AIR</h2>
@@ -37,6 +39,11 @@
                 <button onclick="connectNano()"><img src="/assets/connect.png" alt="Connect" style="width: 16px; height: 20px;"></button>
             </p>
             <p>
+                Sensors:
+                <button onclick="post('/tare')">TARE</button>
+            </p>
+            <p>
+                Safety:
                 <button onclick="post('/unlock')">UNLOCK</button>
                 <button onclick="post('/stop')">STOP</button>
                 (after UNLOCK, hold the button on the bench for 2 s)
@@ -67,7 +74,6 @@
                 <canvas id="graph"></canvas>  
             </div>
         </div>
-
 
     </div>
 {% endblock %}

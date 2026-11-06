@@ -26,6 +26,9 @@ async function refresh() {
             document.getElementById("air-pressure").textContent = s.air.pressure.toFixed(1) + " hPa";
         }
 
+        document.getElementById("thrust-offset").textContent = s.thrust_offset === null ? "no sensor" : s.thrust_offset;
+
+
     } catch (e) {
         show("no answer from the server", false);
     }
